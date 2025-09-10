@@ -20,14 +20,14 @@ do
             log=$logdir/round\_$rounds\_party\_$party.log
             tplog=$logdir/round\_$rounds\_party\_0.log
             if [ $party -eq 1 ]; then
-                ./benchmarks/mpa_emgraph -p $party --localhost -l 100.0 -v $vec_size -i 10 -n $players 2>&1 | cat > $log &
+                ./benchmarks/shuffle -p $party --localhost -l 100.0 -v $vec_size -i 10 -n $players 2>&1 | cat > $log &
             else
-                ./benchmarks/mpa_emgraph -p $party --localhost -l 100.0 -v $vec_size -i 10 -n $players 2>&1 | cat > $log &
+                ./benchmarks/shuffle -p $party --localhost -l 100.0 -v $vec_size -i 10 -n $players 2>&1 | cat > $log &
             fi
             codes[$party]=$!
         done
 
-        ./benchmarks/mpa_emgraph -p 0 --localhost -l 100.0 -v $vec_size -i 10 -n $players 2>&1 | cat > $tplog &
+        ./benchmarks/shuffle -p 0 --localhost -l 100.0 -v $vec_size -i 10 -n $players 2>&1 | cat > $tplog &
         codes[0]=$!
         for party in $(seq 0 $players)
         do

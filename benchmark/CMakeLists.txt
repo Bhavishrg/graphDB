@@ -13,6 +13,7 @@ add_benchmark(initialization_emgraph)
 add_benchmark(mpa_graphiti)
 add_benchmark(mpa_emgraph)
 add_benchmark(e2e_emgraph)
+add_benchmark(shuffle)
 add_benchmark(test_primitives)
 
 add_custom_target(benchmarks)

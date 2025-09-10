@@ -14,8 +14,6 @@ namespace emgraph {
 
 template <class R>
 class AddShare {
-  // key_sh is the additive share of the key used for the MAC
-  // value_ will be additive share of my_id and tag_ will be the additive share of of the tag for my_id.
   R value_;
   
  public:
