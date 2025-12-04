@@ -6,111 +6,154 @@
 #include <algorithm>
 #include <boost/program_options.hpp>
 #include <cmath>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <omp.h>
 
 #include "utils.h"
+#include "graphutils.h"
 
 using namespace graphdb;
 using json = nlohmann::json;
 namespace bpo = boost::program_options;
 
-common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size, size_t add_size) {
+common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist dist_daglist, DistributedDaglist new_edges) {
 
+    int nC = dist_daglist.num_clients;
+    int nV = dist_daglist.nV;
+    int nE = dist_daglist.nE;
+    auto VSizes = dist_daglist.VSizes;
+    auto ESizes = dist_daglist.ESizes;
+    size_t vec_size = nV + nE;
+    
     std::cout << "Generating circuit" << std::endl;
     
     common::utils::Circuit<Ring> circ;
 
-    // Distributed Graph
-    size_t num_vert = 0.1 * vec_size;
-    size_t num_edge = vec_size - num_vert;
-    std::vector<size_t> subg_num_vert(nP);
-    std::vector<size_t> subg_num_edge(nP);
-    for (int i = 0; i < subg_num_vert.size(); ++i) {
-        if (i != nP - 1) {
-            subg_num_vert[i] = num_vert / nP;
-            subg_num_edge[i] = num_edge / nP;
-        } else {
-            subg_num_vert[i] = num_vert / nP + num_vert % nP;
-            subg_num_edge[i] = num_edge / nP + num_edge % nP;
+    // Initialize all daglist field values
+    std::vector<std::vector<wire_t>> vertex_src_values(nC);
+    std::vector<std::vector<wire_t>> vertex_dst_values(nC);
+    std::vector<std::vector<wire_t>> vertex_isV_values(nC);
+    std::vector<std::vector<wire_t>> vertex_data_values(nC);
+    std::vector<std::vector<wire_t>> vertex_sigs_values(nC);
+    std::vector<std::vector<wire_t>> vertex_sigv_values(nC);
+    std::vector<std::vector<wire_t>> vertex_sigd_values(nC);
+
+    std::vector<std::vector<wire_t>> edge_src_values(nC);
+    std::vector<std::vector<wire_t>> edge_dst_values(nC);
+    std::vector<std::vector<wire_t>> edge_isV_values(nC);
+    std::vector<std::vector<wire_t>> edge_data_values(nC);
+    std::vector<std::vector<wire_t>> edge_sigs_values(nC);
+    std::vector<std::vector<wire_t>> edge_sigv_values(nC);
+    std::vector<std::vector<wire_t>> edge_sigd_values(nC);
+
+    for (int i = 0; i < nC; ++i) {
+        std::vector<wire_t> subg_vertex_src_values(VSizes[i]);
+        std::vector<wire_t> subg_vertex_dst_values(VSizes[i]);
+        std::vector<wire_t> subg_vertex_isV_values(VSizes[i]);
+        std::vector<wire_t> subg_vertex_data_values(VSizes[i]);
+        std::vector<wire_t> subg_vertex_sigs_values(VSizes[i]);
+        std::vector<wire_t> subg_vertex_sigv_values(VSizes[i]);
+        std::vector<wire_t> subg_vertex_sigd_values(VSizes[i]);
+        
+        std::vector<wire_t> subg_edge_src_values(ESizes[i]);
+        std::vector<wire_t> subg_edge_dst_values(ESizes[i]);
+        std::vector<wire_t> subg_edge_isV_values(ESizes[i]);
+        std::vector<wire_t> subg_edge_data_values(ESizes[i]);
+        std::vector<wire_t> subg_edge_sigs_values(ESizes[i]);
+        std::vector<wire_t> subg_edge_sigv_values(ESizes[i]);
+        std::vector<wire_t> subg_edge_sigd_values(ESizes[i]);
+
+        for (int j = 0; j < VSizes[i]; ++j){
+            subg_vertex_src_values[j] = circ.newInputWire();
+            subg_vertex_dst_values[j] = circ.newInputWire();
+            subg_vertex_isV_values[j] = circ.newInputWire();
+            subg_vertex_data_values[j] = circ.newInputWire();
+            subg_vertex_sigs_values[j] = circ.newInputWire();
+            subg_vertex_sigv_values[j] = circ.newInputWire();
+            subg_vertex_sigd_values[j] = circ.newInputWire();
         }
+       
+        for (int j = 0; j < ESizes[i]; ++j){
+            subg_edge_src_values[j] = circ.newInputWire();
+            subg_edge_dst_values[j] = circ.newInputWire();
+            subg_edge_isV_values[j] = circ.newInputWire();
+            subg_edge_data_values[j] = circ.newInputWire();
+            subg_edge_sigs_values[j] = circ.newInputWire();
+            subg_edge_sigv_values[j] = circ.newInputWire();
+            subg_edge_sigd_values[j] = circ.newInputWire();
+        }
+
+        vertex_src_values[i] = subg_vertex_src_values;
+        vertex_dst_values[i] = subg_vertex_dst_values;
+        vertex_isV_values[i] = subg_vertex_isV_values;
+        vertex_data_values[i] = subg_vertex_data_values;
+        vertex_sigs_values[i] = subg_vertex_sigs_values;
+        vertex_sigv_values[i] = subg_vertex_sigv_values;
+        vertex_sigd_values[i] = subg_vertex_sigd_values;
+
+        edge_src_values[i] = subg_edge_src_values;
+        edge_dst_values[i] = subg_edge_dst_values;
+        edge_isV_values[i] = subg_edge_isV_values;
+        edge_data_values[i] = subg_edge_data_values;
+        edge_sigs_values[i] = subg_edge_sigs_values;
+        edge_sigv_values[i] = subg_edge_sigv_values;
+        edge_sigd_values[i] = subg_edge_sigd_values;
+    
     }
 
-    std::vector<std::vector<wire_t>> subg_vertex_list(nP);
-    std::vector<std::vector<wire_t>> subg_vertex_pos_V(nP);
-    std::vector<std::vector<wire_t>> subg_vertex_pos_S(nP);
-    std::vector<std::vector<wire_t>> subg_vertex_pos_D(nP);
-    for (int i = 0; i < subg_vertex_list.size(); ++i) {
-        std::vector<wire_t> subg_vertex_list_party(subg_num_vert[i]);
-        std::vector<wire_t> subg_vertex_pos_V_party(subg_num_vert[i]);
-        std::vector<wire_t> subg_vertex_pos_S_party(subg_num_vert[i]);
-        std::vector<wire_t> subg_vertex_pos_D_party(subg_num_vert[i]);
-        for (int j = 0; j < subg_vertex_list_party.size(); ++j) {
-            subg_vertex_list_party[j] = circ.newInputWire();
-            subg_vertex_pos_V_party[j] = circ.newInputWire();
-            subg_vertex_pos_S_party[j] = circ.newInputWire();
-            subg_vertex_pos_D_party[j] = circ.newInputWire();
-        }
-        subg_vertex_list[i] = subg_vertex_list_party;
-        subg_vertex_pos_V[i] = subg_vertex_pos_V_party;
-        subg_vertex_pos_S[i] = subg_vertex_pos_S_party;
-        subg_vertex_pos_D[i] = subg_vertex_pos_D_party;
-    }
+    int add_nE = new_edges.nE;
+    auto add_ESizes = new_edges.ESizes;
 
-    std::vector<std::vector<wire_t>> subg_edge_list(nP);
-    std::vector<std::vector<wire_t>> subg_edge_pos_V(nP);
-    std::vector<std::vector<wire_t>> subg_edge_pos_S(nP);
-    std::vector<std::vector<wire_t>> subg_edge_pos_D(nP);
-    for (int i = 0; i < subg_edge_list.size(); ++i) {
-        std::vector<wire_t> subg_edge_list_party(subg_num_edge[i]);
-        std::vector<wire_t> subg_edge_pos_V_party(subg_num_edge[i]);
-        std::vector<wire_t> subg_edge_pos_S_party(subg_num_edge[i]);
-        std::vector<wire_t> subg_edge_pos_D_party(subg_num_edge[i]);
-        for (int j = 0; j < subg_edge_list_party.size(); ++j) {
-            subg_edge_list_party[j] = circ.newInputWire();
-            subg_edge_pos_V_party[j] = circ.newInputWire();
-            subg_edge_pos_S_party[j] = circ.newInputWire();
-            subg_edge_pos_D_party[j] = circ.newInputWire();
-        }
-        subg_edge_list[i] = subg_edge_list_party;
-        subg_edge_pos_V[i] = subg_edge_pos_V_party;
-        subg_edge_pos_S[i] = subg_edge_pos_S_party;
-        subg_edge_pos_D[i] = subg_edge_pos_D_party;
-    }
+    // Initialize edges to be added.
+    std::vector<std::vector<wire_t>> new_edge_src_values(nC);
+    std::vector<std::vector<wire_t>> new_edge_dst_values(nC);
+    std::vector<std::vector<wire_t>> new_edge_isV_values(nC);
+    std::vector<std::vector<wire_t>> new_edge_data_values(nC);
+    std::vector<std::vector<wire_t>> new_edge_sigs_values(nC);
+    std::vector<std::vector<wire_t>> new_edge_sigv_values(nC);
+    std::vector<std::vector<wire_t>> new_edge_sigd_values(nC);
+    std::vector<std::vector<wire_t>> new_edge_overall_sigs_values(nC);
+    std::vector<std::vector<wire_t>> new_edge_overall_sigd_values(nC);
 
-    // Initialize vectors of edges to be added.
-    // Distribute add_size across parties 
-    std::vector<size_t> add_num_edges(nP);
-    for (int i = 0; i < nP; ++i) {
-        if (i != nP - 1) {
-            add_num_edges[i] = add_size / nP;
-        } else {
-            add_num_edges[i] = add_size / nP + add_size % nP;
+    for (int i = 0; i < nC; ++i) {
+        std::vector<wire_t> subg_new_edge_src_values(add_ESizes[i]);
+        std::vector<wire_t> subg_new_edge_dst_values(add_ESizes[i]);
+        std::vector<wire_t> subg_new_edge_isV_values(add_ESizes[i]);
+        std::vector<wire_t> subg_new_edge_data_values(add_ESizes[i]);
+        // Here sigs, sigd are for within each client's list of added edges
+        std::vector<wire_t> subg_new_edge_sigs_values(add_ESizes[i]);
+        std::vector<wire_t> subg_new_edge_sigv_values(add_ESizes[i]);
+        std::vector<wire_t> subg_new_edge_sigd_values(add_ESizes[i]);
+        
+        for (int j = 0; j < add_ESizes[i]; ++j){
+            subg_new_edge_src_values[j] = circ.newInputWire();
+            subg_new_edge_dst_values[j] = circ.newInputWire();
+            subg_new_edge_isV_values[j] = circ.newInputWire();
+            subg_new_edge_data_values[j] = circ.newInputWire();
+            subg_new_edge_sigs_values[j] = circ.newInputWire();
+            subg_new_edge_sigv_values[j] = circ.newInputWire();
+            subg_new_edge_sigd_values[j] = circ.newInputWire();
         }
-    }
 
-    // For each new edge create data wire and positional wires
-    std::vector<std::vector<wire_t>> new_edge_list(nP);
-    std::vector<std::vector<wire_t>> new_edge_pos_V(nP);
-    std::vector<std::vector<wire_t>> new_edge_pos_S(nP);
-    std::vector<std::vector<wire_t>> new_edge_pos_D(nP);
+        new_edge_src_values[i] = subg_new_edge_src_values;
+        new_edge_dst_values[i] = subg_new_edge_dst_values;
+        new_edge_isV_values[i] = subg_new_edge_isV_values;
+        new_edge_data_values[i] = subg_new_edge_data_values;
+        new_edge_sigs_values[i] = subg_new_edge_sigs_values;
+        new_edge_sigv_values[i] = subg_new_edge_sigv_values;
+        new_edge_sigd_values[i] = subg_new_edge_sigd_values;
 
-    for (int i = 0; i < nP; ++i) {
-        std::vector<wire_t> new_edge_list_party(add_num_edges[i]);
-        for (size_t j = 0; j < add_num_edges[i]; ++j) {
-            new_edge_list_party[j] = circ.newInputWire();
-        }
-        new_edge_list[i] = std::move(new_edge_list_party);
     }
 
     // Create V^Out_i and V^In_i inputs per party (both length |V|)
-    std::vector<std::vector<wire_t>> Vout(nP);
-    std::vector<std::vector<wire_t>> Vin(nP);
-    for (int i = 0; i < nP; ++i) {
-        std::vector<wire_t> Vout_party(num_vert);
-        std::vector<wire_t> Vin_party(num_vert);
-        for (size_t j = 0; j < num_vert; ++j) {
+    std::vector<std::vector<wire_t>> Vout(nC);
+    std::vector<std::vector<wire_t>> Vin(nC);
+    for (int i = 0; i < nC; ++i) {
+        std::vector<wire_t> Vout_party(nV);
+        std::vector<wire_t> Vin_party(nV);
+        for (size_t j = 0; j < nV; ++j) {
             Vout_party[j] = circ.newInputWire();
             Vin_party[j] = circ.newInputWire();
         }
@@ -122,40 +165,40 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size, s
     auto zero_wire = circ.newInputWire();
 
     // Compute aggregated V_in, V_out
-    std::vector<wire_t> Vout_agg(num_vert);
-    std::vector<wire_t> Vin_agg(num_vert);
-    for (size_t j = 0; j < num_vert; ++j) {
+    std::vector<wire_t> Vout_agg(nV);
+    std::vector<wire_t> Vin_agg(nV);
+    for (size_t j = 0; j < nV; ++j) {
         // start with party 0's value then add others
         wire_t acc_out = Vout[0][j];
-        for (int p = 1; p < nP; ++p) {
+        for (int p = 1; p < nC; ++p) {
             acc_out = circ.addGate(common::utils::GateType::kAdd, acc_out, Vout[p][j]);
         }
         Vout_agg[j] = acc_out;
 
         wire_t acc_in = Vin[0][j];
-        for (int p = 1; p < nP; ++p) {
+        for (int p = 1; p < nC; ++p) {
             acc_in = circ.addGate(common::utils::GateType::kAdd, acc_in, Vin[p][j]);
         }
         Vin_agg[j] = acc_in;
     }
 
     // Compute cumulative offsets OffIn[j] and OffOut[j] = sum_{k=0}^{j-1} Vout_agg[k]
-    std::vector<wire_t> OffIn(num_vert);
-    std::vector<wire_t> OffOut(num_vert);
+    std::vector<wire_t> OffIn(nV);
+    std::vector<wire_t> OffOut(nV);
     OffIn[0] = zero_wire;
     OffOut[0] = zero_wire;
-    for (size_t j = 1; j < num_vert; ++j) {
+    for (size_t j = 1; j < nV; ++j) {
         OffIn[j] = circ.addGate(common::utils::GateType::kAdd, OffIn[j - 1], Vin_agg[j - 1]);
         OffOut[j] = circ.addGate(common::utils::GateType::kAdd, OffOut[j - 1], Vout_agg[j - 1]);
     }
     
     // For each party i, compute indicator arrays
-    std::vector<std::vector<wire_t>> IIn(nP);
-    std::vector<std::vector<wire_t>> IOut(nP);
-    for (int i = 0; i < nP; ++i) {
-        IIn[i].resize(num_vert);
-        IOut[i].resize(num_vert);
-        for (size_t j = 0; j < num_vert; ++j) {
+    std::vector<std::vector<wire_t>> IIn(nC);
+    std::vector<std::vector<wire_t>> IOut(nC);
+    for (int i = 0; i < nC; ++i) {
+        IIn[i].resize(nV);
+        IOut[i].resize(nV);
+        for (size_t j = 0; j < nV; ++j) {
             // IIn: 1 - Eqz(Vin[i][j])  --> neg_eq0 = -Eqz(Vin); IIn = neg_eq0 + 1
             auto eq0 = circ.addGate(common::utils::GateType::kEqz, Vin[i][j]);
             auto neg_eq0 = circ.addConstOpGate(common::utils::GateType::kConstMul, eq0, Ring(-1));
@@ -170,38 +213,54 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size, s
     }
     
     // Precompute absolute vertex indices for each party's existing vertices
-    std::vector<size_t> party_vertex_offset(nP);
+    std::vector<size_t> party_vertex_offset(nC);
     party_vertex_offset[0] = 0;
-    for (int i = 1; i < nP; ++i) {
-        party_vertex_offset[i] = party_vertex_offset[i-1] + subg_num_vert[i-1];
+    for (int i = 1; i < nC; ++i) {
+        party_vertex_offset[i] = party_vertex_offset[i-1] + VSizes[i-1];
     }
 
-    // Compute pos_S for new edges
-    // For each vertex, compute data_e = σS + OffOut[j] 
-    std::vector<wire_t> data_e(num_vert);
-    for (int i = 0; i < nP; ++i) {
-        for (size_t j = 0; j < subg_num_vert[i]; ++j) {
+    // For each vertex, compute data_e = sigs + OffOut[j] 
+    std::vector<wire_t> data_e(nV);
+    for (int i = 0; i < nC; ++i) {
+        for (size_t j = 0; j < VSizes[i]; ++j) {
             size_t abs_vertex_idx = party_vertex_offset[i] + j;
             data_e[abs_vertex_idx] = circ.addGate(common::utils::GateType::kAdd, 
-                subg_vertex_pos_S[i][j], OffOut[abs_vertex_idx]);   
+                vertex_sigs_values[i][j], OffOut[abs_vertex_idx]);   
         }
     }
-    std::vector<wire_t> data_e(num_vert);
-    
-    // Group-wise Propagate
+
+    // Compute new edge source group keys
+    std::vector<std::vector<wire_t>> new_edge_src_group(nC);
+    for (int i = 0; i < nC; ++i) {
+        if (add_ESizes[i] == 0) {
+            new_edge_src_group[i] = {};
+            continue;
+        }
+        std::vector<wire_t> new_edge_src_group_party(add_ESizes[i]);
+        new_edge_src_group_party[0] = circ.addConstOpGate(common::utils::GateType::kConstAdd, zero_wire, 1);
+        for (size_t j = 1; j < add_ESizes[i]; ++j) {
+            auto temp = 
+                circ.addGate(common::utils::GateType::kSub, new_edge_src_values[i][j-1], new_edge_src_values[i][j]);
+            temp = circ.addGate(common::utils::GateType::kEqz, temp);
+            temp = circ.addConstOpGate(common::utils::GateType::kConstMul, temp, Ring(-1));
+            new_edge_src_group_party[j] = circ.addConstOpGate(common::utils::GateType::kConstAdd, temp, Ring(1));
+        }
+        new_edge_src_group[i] = std::move(new_edge_src_group_party);
+    }
+
     // Prepare permutations (two separate permutations: one for T1, one for T2)
     // Permutations set as identity for benchmarking
     std::vector<std::vector<int>> permutation;
     
     // T1 permutation
-    std::vector<int> t1_perm(num_vert);
-    for (size_t i = 0; i < num_vert; ++i) {
+    std::vector<int> t1_perm(nV);
+    for (size_t i = 0; i < nV; ++i) {
         t1_perm[i] = i;
     }
     
     // T2 permutation
-    std::vector<int> t2_perm(add_size);
-    for (size_t i = 0; i < add_size; ++i) {
+    std::vector<int> t2_perm(add_nE);
+    for (size_t i = 0; i < add_nE; ++i) {
         t2_perm[i] = i;
     }
     
@@ -217,12 +276,227 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size, s
         permutation.push_back(t1_perm);  // T1 permutation
         permutation.push_back(t2_perm);  // T2 permutation
     }
-    // Group-wise propagate gates
-    for (int i = 0; i < nP; ++i) {
 
+    // Group-wise propagate and index gates
+    // Compute sigs in overall graph for new edges
+    for (int i = 0; i < nC; ++i) {
+        if (add_ESizes[i] == 0) {
+            new_edge_overall_sigs_values[i] = {};
+            continue;
+        }
+        std::vector<wire_t> subg_new_edge_sigs_values(add_ESizes[i]);
+        auto [prop_out_key, prop_out_v] = 
+            circ.addGroupwisePropagateGate(IOut[i], data_e, new_edge_src_group[i], permutation);
+        auto [out_ind, ind_output_key, ind_output_v] = 
+            circ.addGroupwiseIndexGate(new_edge_src_group[i], prop_out_v, permutation);
+        for (int j = 0; j < add_ESizes[i]; ++j) {
+            subg_new_edge_sigs_values[j] = 
+                circ.addGate(common::utils::GateType::kAdd, prop_out_v[j], out_ind[j]);
+        }
+        new_edge_overall_sigs_values[i] = subg_new_edge_sigs_values;
     }
 
+    // Reorder new edges to destination order
+    // Combine components of edge lists into payloads; only need dst and sigs
+    std::vector<std::vector<std::vector<wire_t>>> payloads(nC);
+    for (int i = 0; i < nC; ++i) {
+        payloads[i].reserve(2);
+        payloads[i].push_back(new_edge_dst_values[i]);
+        payloads[i].push_back(new_edge_sigs_values[i]);
+    }
+
+    // PermList gates
+    std::vector<std::vector<std::vector<wire_t>>> payloads_out(nC);
+    for (int i = 0; i < nC; ++i) {
+        if (add_ESizes[i] == 0) {
+            payloads_out[i] = {};
+        } else {
+            payloads_out[i] = addSubCircPermList(circ, new_edge_sigd_values[i], payloads[i], permutation);
+        }
+    }
     
+    // Compute new edge dest group keys
+    std::vector<std::vector<wire_t>> new_edge_dest_group(nC);
+    for (int i = 0; i < nC; ++i) {
+        if (add_ESizes[i] == 0) {
+            new_edge_dest_group[i] = {};
+            continue;
+        }
+        std::vector<wire_t> new_edge_dest_group_party(add_ESizes[i]);
+        new_edge_dest_group_party[0] = circ.addConstOpGate(common::utils::GateType::kConstAdd, zero_wire, 1);
+        for (size_t j = 1; j < add_ESizes[i]; ++j) {
+            auto temp = 
+                circ.addGate(common::utils::GateType::kSub, payloads_out[i][0][j-1], payloads_out[i][0][j]);
+            temp = circ.addGate(common::utils::GateType::kEqz, temp);
+            temp = circ.addConstOpGate(common::utils::GateType::kConstMul, temp, Ring(-1));
+            new_edge_dest_group_party[j] = circ.addConstOpGate(common::utils::GateType::kConstAdd, temp, Ring(1));
+        }
+        new_edge_dest_group[i] = std::move(new_edge_dest_group_party);
+    }
+
+    // Compute overall sigd for new edges
+    for (int i = 0; i < nC; ++i) {
+        if (add_ESizes[i] == 0) {
+            new_edge_overall_sigd_values[i] = {};
+            continue;
+        }
+        std::vector<wire_t> subg_new_edge_sigd_values(add_ESizes[i]);
+        auto [prop_out_key, prop_out_v] = 
+            circ.addGroupwisePropagateGate(IIn[i], data_e, new_edge_dest_group[i], permutation);
+        auto [out_ind, ind_output_key, ind_output_v] = 
+            circ.addGroupwiseIndexGate(new_edge_dest_group[i], prop_out_v, permutation);
+        for (int j = 0; j < add_ESizes[i]; ++j) {
+            subg_new_edge_sigd_values[j] = 
+                circ.addGate(common::utils::GateType::kAdd, prop_out_v[j], out_ind[j]);
+        }
+        new_edge_overall_sigd_values[i] = subg_new_edge_sigd_values;
+    }
+
+    // Reorder overall_sigd_values back to source order
+    for (int i = 0; i < nC; ++i) {
+        if (add_ESizes[i] == 0) {
+            continue;
+        }
+        payloads[i][0] = new_edge_overall_sigd_values[i];
+        payloads_out[i] = addSubCircPermList(circ, payloads_out[i][1], payloads[i], permutation);
+    }
+
+    // Flatten (original) G
+    std::vector<wire_t> src(nV + nE);
+    std::vector<wire_t> dst(nV + nE);
+    std::vector<wire_t> isV(nV + nE);
+    std::vector<wire_t> data(nV + nE);
+    std::vector<wire_t> sigs(nV + nE);
+    std::vector<wire_t> sigv(nV + nE);
+    std::vector<wire_t> sigd(nV + nE);
+
+    int index = 0; 
+
+    for (int i = 0; i < nC; ++i) {
+        for (int j = 0; j < VSizes[i]; ++j) {
+            src[index] = vertex_src_values[i][j];
+            dst[index] = vertex_dst_values[i][j];
+            isV[index] = vertex_isV_values[i][j];
+            data[index] = vertex_data_values[i][j];
+            sigs[index] = vertex_sigs_values[i][j];
+            sigv[index] = vertex_sigv_values[i][j];
+            sigd[index] = vertex_sigd_values[i][j];
+            index++;
+        }
+    }
+
+    for (int i = 0; i < nC; ++i) {
+        for (int j = 0; j < ESizes[i]; ++j) {
+            src[index] = edge_src_values[i][j];
+            dst[index] = edge_dst_values[i][j];
+            isV[index] = edge_isV_values[i][j];
+            data[index] = edge_data_values[i][j];
+            sigs[index] = edge_sigs_values[i][j];
+            sigv[index] = edge_sigv_values[i][j];
+            sigd[index] = edge_sigd_values[i][j];
+            index++;
+        }
+    }
+
+    // Add in dummy entries for edges to Vout_agg, Vin_agg
+    std::vector<wire_t> Gout(vec_size);
+    std::vector<wire_t> Gin(vec_size);
+
+    for (int i = 0; i < nV; ++i) {
+        Gout[i] = Vout_agg[i];
+        Gin[i] = Vin_agg[i];
+    }
+    for (int i = 0; i < nE; ++i) {
+        Gout[nV + i] = circ.addConstOpGate(common::utils::GateType::kConstAdd, zero_wire, 0);
+        Gin[nV + i] = circ.addConstOpGate(common::utils::GateType::kConstAdd, zero_wire, 0);
+    }
+    
+    // Reorder G, Gout, Gin to source order 
+    std::vector<std::vector<wire_t>> G_payload(5);
+    G_payload[0] = sigs;
+    G_payload[1] = sigv;
+    G_payload[2] = sigd;
+    G_payload[3] = Gout;
+    G_payload[4] = Gin;
+
+    std::vector<std::vector<wire_t>> G_reordered = addSubCircPermList(circ, sigs, G_payload, permutation);
+
+    // Update sigs of existing entries using a running wire_t accumulator
+    std::vector<wire_t> updated_sigs(vec_size);
+    wire_t Gout_acc = zero_wire;
+    for (int i = 0; i < vec_size; ++i) {
+        updated_sigs[i] = circ.addGate(common::utils::GateType::kAdd, G_reordered[0][i], Gout_acc);
+        Gout_acc = circ.addGate(common::utils::GateType::kAdd, Gout_acc, G_reordered[3][i]);
+    }
+
+    // Reorder G, Gin to destination order
+    G_payload[0] = updated_sigs;
+    G_payload[1] = G_reordered[1];
+    G_payload[2] = G_reordered[2];
+    G_payload[3] = G_reordered[4]; // Don't need Gout anymore
+
+    // drop the last element from G_payload
+    G_payload.pop_back();
+    G_reordered.pop_back();
+
+    G_reordered = addSubCircPermList(circ, G_reordered[2], G_payload, permutation);
+
+    // Update sigd of existing entries
+    std::vector<wire_t> updated_sigd(vec_size);
+    wire_t Gin_acc = zero_wire;
+    for (int i = 0; i < vec_size; ++i) {
+        updated_sigd[i] = circ.addGate(common::utils::GateType::kAdd, G_reordered[2][i], Gin_acc);
+        Gin_acc = circ.addGate(common::utils::GateType::kAdd, Gin_acc, G_reordered[3][i]);
+    }
+
+    // Reorder G to vertex order
+    G_payload[0] = G_reordered[0];
+    G_payload[1] = G_reordered[1];
+    G_payload[2] = updated_sigd;
+
+    G_payload.pop_back();
+    G_reordered.pop_back();
+
+    G_reordered = addSubCircPermList(circ, G_reordered[1], G_payload, permutation);
+
+    // Update sigv and set outputs
+    index = 0;
+    for (int i = 0; i < nV; ++i) { // Vertices
+        circ.setAsOutput(src[i]);
+        circ.setAsOutput(dst[i]);
+        circ.setAsOutput(isV[i]);
+        circ.setAsOutput(data[i]);
+        circ.setAsOutput(G_reordered[0][i]); // sigs
+        circ.setAsOutput(G_reordered[1][i]); // sigv
+        circ.setAsOutput(G_reordered[2][i]); // sigd
+        index++;
+    }
+    wire_t index_wire;
+    for (int i = 0; i < nC; ++i) { // New edges
+        for (int j = 0; j < add_ESizes[i]; ++j){
+            circ.setAsOutput(new_edge_src_values[i][j]);
+            circ.setAsOutput(new_edge_dst_values[i][j]);
+            circ.setAsOutput(new_edge_isV_values[i][j]);
+            circ.setAsOutput(new_edge_data_values[i][j]);
+            circ.setAsOutput(new_edge_overall_sigs_values[i][j]); // sigs
+            index_wire = circ.addConstOpGate(common::utils::GateType::kConstAdd, zero_wire, Ring(index));
+            circ.setAsOutput(index_wire); // sigv
+            circ.setAsOutput(payloads_out[i][0][j]); // sigd
+            index++;
+        }
+    }
+
+    for (int i = 0; i < nE; ++i) { // Existing edges
+        circ.setAsOutput(src[nV + i]);
+        circ.setAsOutput(dst[nV + i]);
+        circ.setAsOutput(isV[nV + i]);
+        circ.setAsOutput(data[nV + i]);
+        circ.setAsOutput(G_reordered[0][nV + i]); // sigs
+        index_wire = circ.addConstOpGate(common::utils::GateType::kConstAdd, zero_wire, Ring(index));
+        circ.setAsOutput(index_wire); // sigv
+        circ.setAsOutput(G_reordered[2][nV + i]); // sigd
+        index++;
+    }
     
     return circ;
 }
