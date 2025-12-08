@@ -101,9 +101,6 @@ struct DistributedDaglist {
     // Operation lists for graph modifications
     vector<vector<DagEntry>> InsertV;  // InsertV[i] = vertices to insert for party i
     vector<vector<DagEntry>> InsertE;  // InsertE[i] = edges to insert for party i
-    vector<vector<DagEntry>> DeleteV;  // DeleteV[i] = vertices to delete for party i
-    vector<vector<DagEntry>> DeleteE;  // DeleteE[i] = edges to delete for party i
-    
     vector<vector<Ring>> ChangeV;   // ChangeV[i][j] = data change for j-th vertex of party i
     vector<vector<Ring>> isChangeV; // ChangeV[i][j] = 1/0 indicating if j-th vertex of party i is changed
     vector<vector<Ring>> ChangeE;   // ChangeE[i][j] = data change for j-th edge of party i
@@ -120,8 +117,6 @@ struct DistributedDaglist {
         ESizes.resize(np, 0);
         InsertV.resize(np);
         InsertE.resize(np);
-        DeleteV.resize(np);
-        DeleteE.resize(np);
         ChangeV.resize(np);
         ChangeE.resize(np);
         isChangeV.resize(np);
@@ -138,8 +133,6 @@ struct DistributedDaglist {
         ESizes.resize(np, 0);
         InsertV.resize(np);
         InsertE.resize(np);
-        DeleteV.resize(np);
-        DeleteE.resize(np);
         ChangeV.resize(np);
         ChangeE.resize(np);
         isChangeV.resize(np);
@@ -700,6 +693,168 @@ inline DistributedDaglist generate_random_entry_deletes(const DistributedDaglist
     } else {
       result.isDelE[entry.party_id][entry.local_idx] = 1;
     }
+  }
+  
+  return result;
+}
+
+// Generate random vertices to be inserted into a DistributedDaglist
+// Returns a new DistributedDaglist with InsertV populated with random vertex entries
+// Vertices are distributed across clients proportionally to their current sizes
+// Input: dist_daglist - the distributed daglist (used for distribution reference)
+//        num_inserts - total number of vertices to insert across all clients
+//        seed - random seed for reproducibility
+inline DistributedDaglist generate_random_vertices_to_insert(const DistributedDaglist& dist_daglist, 
+                                                             Ring num_inserts, 
+                                                             Ring seed = 42) {
+  
+  // Create a new DistributedDaglist with same structure but populated InsertV
+  DistributedDaglist result(dist_daglist.num_clients, dist_daglist.nV, dist_daglist.nE);
+  
+  // Initialize InsertV for each client
+  for (int c = 0; c < result.num_clients; ++c) {
+    result.InsertV[c].clear();
+  }
+  
+  if (num_inserts == 0) {
+    return result;
+  }
+  
+  std::mt19937_64 rng(seed);
+  std::uniform_int_distribution<Ring> vertex_id_dist(0, dist_daglist.nV - 1);
+  std::uniform_int_distribution<Ring> data_dist(1, 1000);
+  
+  // Distribute num_inserts across clients proportionally to their current vertex sizes
+  std::vector<Ring> inserts_per_client(result.num_clients, 0);
+  Ring total_verts = 0;
+  for (int c = 0; c < result.num_clients; ++c) {
+    total_verts += dist_daglist.VSizes[c];
+  }
+  
+  // Assign vertices to clients proportionally
+  Ring remaining = num_inserts;
+  for (int c = 0; c < result.num_clients; ++c) {
+    if (total_verts > 0) {
+      Ring share = (num_inserts * dist_daglist.VSizes[c]) / total_verts;
+      inserts_per_client[c] = share;
+      remaining -= share;
+    }
+  }
+  
+  // Distribute any remaining vertices to the first client
+  if (remaining > 0 && result.num_clients > 0) {
+    inserts_per_client[0] += remaining;
+  }
+  
+  // Generate random vertex entries for each client
+  Ring global_vertex_id = dist_daglist.nV;  // New vertices start after existing ones
+  
+  for (int c = 0; c < result.num_clients; ++c) {
+    for (Ring i = 0; i < inserts_per_client[c]; ++i) {
+      Ring src = global_vertex_id;
+      Ring dst = global_vertex_id;
+      Ring isV = 1;  // Mark as vertex entry
+      Ring data = data_dist(rng);
+      
+      // sigs, sigv, sigd will be computed during circuit generation
+      DagEntry new_vertex(src, dst, isV, data, 0, 0, 0);
+      result.InsertV[c].push_back(new_vertex);
+      
+      global_vertex_id++;
+    }
+  }
+  
+  // Copy over existing graph info for reference
+  for (int c = 0; c < result.num_clients; ++c) {
+    result.VertexLists[c] = dist_daglist.VertexLists[c];
+    result.EdgeLists[c] = dist_daglist.EdgeLists[c];
+    result.VSizes[c] = dist_daglist.VSizes[c];
+    result.ESizes[c] = dist_daglist.ESizes[c];
+  }
+  
+  return result;
+}
+
+// Generate random edges to be inserted into a DistributedDaglist
+// Returns a DistributedDaglist with InsertE populated with random edge entries
+// Edges are distributed across clients proportionally to their current sizes
+// Input: dist_daglist - the distributed daglist (used for distribution reference)
+//        num_inserts - total number of edges to insert across all clients
+//        seed - random seed for reproducibility
+inline DistributedDaglist generate_random_edges_to_insert(const DistributedDaglist& dist_daglist, 
+                                                          Ring num_inserts, 
+                                                          Ring seed = 42) {
+  
+  // Create a new DistributedDaglist with same structure but populated InsertE
+  DistributedDaglist result(dist_daglist.num_clients, dist_daglist.nV, dist_daglist.nE);
+  
+  // Initialize InsertE for each client
+  for (int c = 0; c < result.num_clients; ++c) {
+    result.InsertE[c].clear();
+  }
+  
+  if (num_inserts == 0) {
+    return result;
+  }
+  
+  std::mt19937_64 rng(seed);
+  std::uniform_int_distribution<Ring> vertex_dist(0, dist_daglist.nV - 1);
+  std::uniform_int_distribution<Ring> data_dist(1, 1000);
+  
+  // Distribute num_inserts across clients proportionally to their current edge sizes
+  std::vector<Ring> inserts_per_client(result.num_clients, 0);
+  Ring total_edges = 0;
+  for (int c = 0; c < result.num_clients; ++c) {
+    total_edges += dist_daglist.ESizes[c];
+  }
+  
+  // Assign edges to clients proportionally
+  Ring remaining = num_inserts;
+  for (int c = 0; c < result.num_clients; ++c) {
+    if (total_edges > 0) {
+      Ring share = (num_inserts * dist_daglist.ESizes[c]) / total_edges;
+      inserts_per_client[c] = share;
+      remaining -= share;
+    } else if (result.num_clients > 0 && c == 0) {
+      // If no edges exist, give all to first client
+      inserts_per_client[c] = num_inserts;
+      remaining = 0;
+    }
+  }
+  
+  // Distribute any remaining edges to the first client
+  if (remaining > 0 && result.num_clients > 0) {
+    inserts_per_client[0] += remaining;
+  }
+  
+  // Generate random edge entries for each client
+  unordered_set<Ring> seen;
+  
+  for (int c = 0; c < result.num_clients; ++c) {
+    for (Ring i = 0; i < inserts_per_client[c]; ++i) {
+      Ring src, dst;
+      // Generate random edge without duplicates
+      do {
+        src = vertex_dist(rng);
+        dst = vertex_dist(rng);
+      } while (src == dst || seen.find(pack_pair(src, dst)) != seen.end());
+      
+      seen.insert(pack_pair(src, dst));
+      Ring isV = 0;  // Mark as edge entry
+      Ring data = data_dist(rng);
+      
+      // sigs, sigv, sigd will be computed during circuit generation
+      DagEntry new_edge(src, dst, isV, data, 0, 0, 0);
+      result.InsertE[c].push_back(new_edge);
+    }
+  }
+  
+  // Copy over existing graph info for reference
+  for (int c = 0; c < result.num_clients; ++c) {
+    result.VertexLists[c] = dist_daglist.VertexLists[c];
+    result.EdgeLists[c] = dist_daglist.EdgeLists[c];
+    result.VSizes[c] = dist_daglist.VSizes[c];
+    result.ESizes[c] = dist_daglist.ESizes[c];
   }
   
   return result;

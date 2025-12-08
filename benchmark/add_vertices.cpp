@@ -18,7 +18,7 @@ using namespace graphdb;
 using json = nlohmann::json;
 namespace bpo = boost::program_options;
 
-common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist dist_daglist, DistributedDaglist new_vertices) {
+common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist dist_daglist) {
 
     int nC = dist_daglist.num_clients;
     int nV = dist_daglist.nV;
@@ -103,8 +103,12 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
     
     }
 
-    int add_nV = new_vertices.nV;
-    auto add_VSizes = new_vertices.VSizes;
+    int add_nV = 0;
+    std::vector<int> add_VSizes(nC, 0);
+    for (int i = 0; i < nC; ++i) {
+        add_VSizes[i] = dist_daglist.InsertV[i].size();
+        add_nV += add_VSizes[i];
+    }
   
     // Initialize vertices to be added.
     std::vector<std::vector<wire_t>> new_vertex_src_values(nC);
@@ -316,4 +320,338 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
     }
 
     return circ;
+}
+
+void benchmark(const bpo::variables_map& opts) {
+
+    bool save_output = false;
+    std::string save_file;
+    if (opts.count("output") != 0) {
+        save_output = true;
+        save_file = opts["output"].as<std::string>();
+    }
+
+    auto num_vert = opts["num-vert"].as<size_t>();
+    auto num_edge = opts["num-edge"].as<size_t>();
+    auto vec_size = num_vert + num_edge;
+    auto nP = opts["num-parties"].as<int>();
+    auto nC = opts["num-clients"].as<int>();
+    auto latency = opts["latency"].as<double>();
+    auto pid = opts["pid"].as<size_t>();
+    auto threads = opts["threads"].as<size_t>();
+    auto seed = opts["seed"].as<size_t>();
+    auto repeat = opts["repeat"].as<size_t>();
+    auto port = opts["port"].as<int>();
+    auto use_pking = opts["use-pking"].as<bool>();
+
+    omp_set_nested(1);
+    if (nP < 10) { omp_set_num_threads(nP); }
+    else { omp_set_num_threads(10); }
+
+    std::cout << "Starting benchmarks" << std::endl;
+
+    std::string net_config = opts.count("net-config") ? opts["net-config"].as<std::string>() : "";
+    std::shared_ptr<io::NetIOMP> network = createNetwork(pid, nP, latency, port,
+                                                          opts["localhost"].as<bool>(),
+                                                          net_config);
+
+    json output_data;
+    output_data["details"] = {{"num_parties", nP},
+                              {"num_clients", nC},
+                              {"num_vert", num_vert},
+                              {"num_edge", num_edge},
+                              {"operation", "insert_vertices"},
+                              {"latency (ms)", latency},
+                              {"pid", pid},
+                              {"threads", threads},
+                              {"seed", seed},
+                              {"repeat", repeat}};
+    output_data["benchmarks"] = json::array();
+
+    std::cout << "--- Details ---" << std::endl;
+    for (const auto& [key, value] : output_data["details"].items()) {
+        std::cout << key << ": " << value << std::endl;
+    }
+    std::cout << std::endl;
+
+    // Generate test graph
+    Ring nV = static_cast<Ring>(num_vert);
+    Ring nE = static_cast<Ring>(num_edge);
+    
+    std::cout << "============================\n" << std::endl;
+    std::cout << "Generating random inputs " << std::endl;
+    std::cout << "Generating scale-free graph with nV=" << nV << ", nE=" << nE << " (seed=" << seed << ")" << std::endl;
+    auto edges = generate_scale_free(nV, nE, seed);
+    std::cout << "Generated " << edges.size() << " edges" << std::endl;
+    
+    std::cout << "Building daglist..." << std::endl;
+    auto daglist = build_daglist(nV, edges);
+    std::cout << "Built daglist with " << daglist.size() << " entries" << std::endl;
+    
+    // Distribute daglist across clients
+    std::cout << "Distributing daglist across " << nC << " clients..." << std::endl;
+    auto dist_daglist = distribute_daglist(daglist, nC);
+    
+    // Generate random vertices to insert (insert 20% of current vertices)
+    Ring num_inserts = static_cast<Ring>(nV * 0.2);
+    std::cout << "Generating random vertices to insert: " << num_inserts << " vertices..." << std::endl;
+    dist_daglist = generate_random_vertices_to_insert(dist_daglist, num_inserts, seed);
+
+
+    StatsPoint start(*network);
+    network->sync();
+
+    auto circ = generateCircuit(nP, pid, dist_daglist).orderGatesByLevel();
+    network->sync();
+
+    std::cout << "--- Circuit ---" << std::endl;
+    std::cout << circ << std::endl;
+    
+    std::unordered_map<common::utils::wire_t, int> input_pid_map;
+    for (const auto& g : circ.gates_by_level[0]) {
+        if (g->type == common::utils::GateType::kInp) {
+            input_pid_map[g->out] = 1;
+        }
+    }
+
+    std::cout << "Starting preprocessing" << std::endl;
+    StatsPoint preproc_start(*network);
+    int latency_us = static_cast<int>(latency * 1000);
+    OfflineEvaluator off_eval(nP, pid, network, circ, threads, seed, latency_us, use_pking);
+    auto preproc = off_eval.run(input_pid_map);
+    std::cout << "Preprocessing complete" << std::endl;
+    network->sync();
+    StatsPoint preproc_end(*network);
+
+    std::cout << "Setting inputs" << std::endl;
+    OnlineEvaluator eval(nP, pid, network, std::move(preproc), circ, threads, seed, latency_us, use_pking);
+    
+    std::unordered_map<common::utils::wire_t, Ring> inputs;
+    
+    // Collect all input wires owned by this party
+    std::vector<common::utils::wire_t> input_wires;
+    for (const auto& [wire, owner] : input_pid_map) {
+        if (owner == static_cast<int>(pid)) {
+            input_wires.push_back(wire);
+        }
+    }
+    
+    // Sort to ensure consistent ordering
+    std::sort(input_wires.begin(), input_wires.end());
+    
+    std::cout << "Setting inputs for party " << pid << std::endl;
+    
+    // Only party 1 sets inputs
+    std::vector<Ring> graph_input_values;
+
+    if (pid == 1) {
+
+        // Print distribution info
+        std::cout << "\n=== Daglist Distribution ===" << std::endl;
+        for (int i = 0; i < nC; ++i) {
+            std::cout << "Client " << i << ": " << dist_daglist.VSizes[i] << " vertices, "
+                    << dist_daglist.ESizes[i] << " edges, " << dist_daglist.InsertV[i].size() << " to insert" << std::endl;
+        }
+        std::cout << "============================\n" << std::endl;
+    
+        std::vector<Ring> all_input_values;
+        
+        // Collect all vertex and edge fields for all clients
+        for (int c = 0; c < nC; ++c) {
+            for (size_t i = 0; i < dist_daglist.VSizes[c]; ++i) {
+                all_input_values.push_back(dist_daglist.VertexLists[c][i].src);
+                all_input_values.push_back(dist_daglist.VertexLists[c][i].dst);
+                all_input_values.push_back(dist_daglist.VertexLists[c][i].isV);
+                all_input_values.push_back(dist_daglist.VertexLists[c][i].data);
+                all_input_values.push_back(dist_daglist.VertexLists[c][i].sigs);
+                all_input_values.push_back(dist_daglist.VertexLists[c][i].sigv);
+                all_input_values.push_back(dist_daglist.VertexLists[c][i].sigd);
+            }
+
+            for (size_t i = 0; i < dist_daglist.ESizes[c]; ++i) {
+                all_input_values.push_back(dist_daglist.EdgeLists[c][i].src);
+                all_input_values.push_back(dist_daglist.EdgeLists[c][i].dst);
+                all_input_values.push_back(dist_daglist.EdgeLists[c][i].isV);
+                all_input_values.push_back(dist_daglist.EdgeLists[c][i].data);
+                all_input_values.push_back(dist_daglist.EdgeLists[c][i].sigs);
+                all_input_values.push_back(dist_daglist.EdgeLists[c][i].sigv);
+                all_input_values.push_back(dist_daglist.EdgeLists[c][i].sigd);
+            }
+        }
+        
+        // Collect new vertex fields for all clients
+        for (int c = 0; c < nC; ++c) {
+            for (size_t i = 0; i < dist_daglist.InsertV[c].size(); ++i) {
+                all_input_values.push_back(dist_daglist.InsertV[c][i].src);
+                all_input_values.push_back(dist_daglist.InsertV[c][i].dst);
+                all_input_values.push_back(dist_daglist.InsertV[c][i].isV);
+                all_input_values.push_back(dist_daglist.InsertV[c][i].data);
+            }
+        }
+        
+                // Map collected values into circuit input wires (in order)
+        size_t wire_idx = 0;
+        for (size_t i = 0; i < all_input_values.size() && wire_idx < input_wires.size(); ++i) {
+            inputs[input_wires[wire_idx++]] = all_input_values[i];
+        }
+        
+        // Store for verification
+        graph_input_values = all_input_values;
+        
+        std::cout << "\n=== DEBUG: First 20 inputs being set ===" << std::endl;
+        size_t debug_count = std::min(size_t(100), all_input_values.size());
+        for (size_t i = 0; i < debug_count; ++i) {
+            std::cout << "Input[" << i << "] = " << all_input_values[i] << std::endl;
+        }
+        std::cout << "===================================\n" << std::endl;
+    }
+
+    std::cout << "Total inputs set by party " << pid << ": " << inputs.size() << std::endl;
+    
+    if (pid == 1) {
+        std::cout << "Party 1 setting " << inputs.size() << " actual input values" << std::endl;
+    } else {
+        std::cout << "Party " << pid << " setting " << inputs.size() << " empty inputs (participant in MPC)" << std::endl;
+    }
+    
+    eval.setInputs(inputs);
+    network->sync();
+    
+    std::cout << "Starting online evaluation" << std::endl;
+    StatsPoint online_start(*network);
+    for (size_t i = 0; i < circ.gates_by_level.size(); ++i) {
+        eval.evaluateGatesAtDepth(i);
+    }
+    network->flush();
+    network->sync();
+    StatsPoint online_end(*network);
+    std::cout << "Online evaluation complete" << std::endl;
+
+    std::cout << "Getting outputs..." << std::endl;
+    network->flush();
+    auto outputs = eval.getOutputs();
+    network->sync();
+    std::cout << "Number of outputs: " << outputs.size() << std::endl;
+    
+
+
+    if (outputs.size() > 0) {
+        std::cout << "\n=== DEBUG: Party " << pid << " outputs ===" << std::endl;
+        std::cout << "Total outputs: " << outputs.size() << std::endl;
+        
+        if (pid == 1 && outputs.size() > 0) {
+        std::cout << "\n=== DEBUG: First 20 raw outputs ===" << std::endl;
+        for (size_t i = 0; i < std::min(size_t(100), outputs.size()); ++i) {
+            std::cout << "Output[" << i << "] = " << outputs[i] << std::endl;
+        }
+        std::cout << "===================================\n" << std::endl;
+        }
+        std::cout << "===================================\n" << std::endl;
+    }
+
+
+    StatsPoint end(*network);
+
+     auto preproc_rbench = preproc_end - preproc_start;
+    auto online_rbench = online_end - online_start;
+    auto total_rbench = end - start;
+    output_data["benchmarks"].push_back(preproc_rbench);
+    output_data["benchmarks"].push_back(online_rbench);
+    output_data["benchmarks"].push_back(total_rbench);
+
+    size_t pre_bytes_sent = 0;
+    for (const auto& val : preproc_rbench["communication"]) {
+        pre_bytes_sent += val.get<int64_t>();
+    }
+    size_t online_bytes_sent = 0;
+    for (const auto& val : online_rbench["communication"]) {
+        online_bytes_sent += val.get<int64_t>();
+    }
+    size_t total_bytes_sent = 0;
+    for (const auto& val : total_rbench["communication"]) {
+        total_bytes_sent += val.get<int64_t>();
+    }
+
+    std::cout << "preproc time: " << preproc_rbench["time"] << " ms" << std::endl;
+    std::cout << "preproc sent: " << pre_bytes_sent << " bytes" << std::endl;
+    std::cout << "online time: " << online_rbench["time"] << " ms" << std::endl;
+    std::cout << "online sent: " << online_bytes_sent << " bytes" << std::endl;
+    std::cout << "total time: " << total_rbench["time"] << " ms" << std::endl;
+    std::cout << "total sent: " << total_bytes_sent << " bytes" << std::endl;
+    std::cout << std::endl;
+
+    output_data["stats"] = {{"peak_virtual_memory", peakVirtualMemory()},
+                            {"peak_resident_set_size", peakResidentSetSize()}};
+
+    std::cout << "--- Statistics ---" << std::endl;
+    for (const auto& [key, value] : output_data["stats"].items()) {
+        std::cout << key << ": " << value << std::endl;
+    }
+    std::cout << std::endl;
+
+    if (save_output) {
+        saveJson(output_data, save_file);
+    }
+}
+
+bpo::options_description programOptions() {
+    bpo::options_description desc("Following options are supported by config file too.");
+    desc.add_options()
+        ("num-parties,n", bpo::value<int>()->required(), "Number of parties.")
+        ("num-clients", bpo::value<int>()->default_value(2), "Number of parties.")
+        ("num-vert", bpo::value<size_t>()->default_value(1000), "Number of vertices in the graph.")
+        ("num-edge", bpo::value<size_t>()->default_value(4000), "Number of edges in the graph.")
+        ("num-payloads", bpo::value<size_t>()->default_value(1), "Number of payload vectors.")
+        ("latency,l", bpo::value<double>()->default_value(0.5), "Network latency in ms.")
+        ("pid,p", bpo::value<size_t>()->required(), "Party ID.")
+        ("threads,t", bpo::value<size_t>()->default_value(6), "Number of threads (recommended 6).")
+        ("seed", bpo::value<size_t>()->default_value(200), "Value of the random seed.")
+        ("net-config", bpo::value<std::string>(), "Path to JSON file containing network details of all parties.")
+        ("localhost", bpo::bool_switch(), "All parties are on same machine.")
+        ("port", bpo::value<int>()->default_value(10000), "Base port for networking.")
+        ("output,o", bpo::value<std::string>(), "File to save benchmarks.")
+        ("repeat,r", bpo::value<size_t>()->default_value(1), "Number of times to run benchmarks.")
+        ("use-pking", bpo::value<bool>()->default_value(true), "Use king party for reconstruction (true) or direct reconstruction (false).");
+  return desc;
+}
+
+int main(int argc, char* argv[]) {
+    auto prog_opts(programOptions());
+    bpo::options_description cmdline("Benchmark secure vertex insertion circuit.");
+    cmdline.add(prog_opts);
+    cmdline.add_options()(
+      "config,c", bpo::value<std::string>(),
+      "configuration file for easy specification of cmd line arguments")(
+      "help,h", "produce help message");
+    bpo::variables_map opts;
+    bpo::store(bpo::command_line_parser(argc, argv).options(cmdline).run(), opts);
+    if (opts.count("help") != 0) {
+        std::cout << cmdline << std::endl;
+        return 0;
+    }
+    if (opts.count("config") > 0) {
+        std::string cpath(opts["config"].as<std::string>());
+        std::ifstream fin(cpath.c_str());
+        if (fin.fail()) {
+            std::cerr << "Could not open configuration file at " << cpath << std::endl;
+            return 1;
+        }
+        bpo::store(bpo::parse_config_file(fin, prog_opts), opts);
+    }
+    try {
+        bpo::notify(opts);
+        if (!opts["localhost"].as<bool>() && (opts.count("net-config") == 0)) {
+            throw std::runtime_error("Expected one of 'localhost' or 'net-config'");
+        }
+    } catch (const std::exception& ex) {
+        std::cerr << ex.what() << std::endl;
+        return 1;
+    }
+    try {
+        benchmark(opts);
+    } catch (const std::exception& ex) {
+        std::cerr << ex.what() << "\nFatal error" << std::endl;
+        return 1;
+    }
+    return 0;
 }

@@ -28,6 +28,8 @@ add_benchmark(gather)
 add_benchmark(data_change)
 add_benchmark(delete)
 add_benchmark(bfs)
+add_benchmark(add_vertices)
+add_benchmark(add_edges)
 
 add_custom_target(benchmarks)
 add_dependencies(benchmarks ${benchbin})

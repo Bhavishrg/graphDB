@@ -250,6 +250,7 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
     payload_d = addSubCircPermList(circ, sigs_to_sigv, payload_d, permutation);
     updated_sigd = payload_d[0];
 
+    // Missing isV?
     payload1.resize(6);
     payload1[0] = src;
     payload1[1] = dst;
@@ -573,7 +574,7 @@ bpo::options_description programOptions() {
 
 int main(int argc, char* argv[]) {
     auto prog_opts(programOptions());
-    bpo::options_description cmdline("Benchmark secure compaction circuit.");
+    bpo::options_description cmdline("Benchmark secure vertex/edge deletion circuit.");
     cmdline.add(prog_opts);
     cmdline.add_options()(
       "config,c", bpo::value<std::string>(),
