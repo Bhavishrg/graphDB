@@ -165,14 +165,13 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
         Vin[i] = Vin_party;
     }
 
-    // zero wire - input 0
-    auto zero_wire = circ.newInputWire();
+    auto zero_wire = circ.addGate(kSub, vertex_src_values[0][0], vertex_src_values[0][0]);
 
     // Compute aggregated V_in, V_out
     std::vector<wire_t> Vout_agg(nV);
     std::vector<wire_t> Vin_agg(nV);
     for (size_t j = 0; j < nV; ++j) {
-        // start with party 0's value then add others
+        // start with client 0's value then add others
         wire_t acc_out = Vout[0][j];
         for (int p = 1; p < nC; ++p) {
             acc_out = circ.addGate(common::utils::GateType::kAdd, acc_out, Vout[p][j]);
@@ -189,10 +188,10 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
     // Compute cumulative offsets OffIn[j] and OffOut[j] = sum_{k=0}^{j-1} Vout_agg[k]
     std::vector<wire_t> OffIn(nV);
     std::vector<wire_t> OffOut(nV);
-    OffIn[0] = zero_wire;
+    OffIn[0] = Vin_agg[0];
     OffOut[0] = zero_wire;
     for (size_t j = 1; j < nV; ++j) {
-        OffIn[j] = circ.addGate(common::utils::GateType::kAdd, OffIn[j - 1], Vin_agg[j - 1]);
+        OffIn[j] = circ.addGate(common::utils::GateType::kAdd, OffIn[j - 1], Vin_agg[j]);
         OffOut[j] = circ.addGate(common::utils::GateType::kAdd, OffOut[j - 1], Vout_agg[j - 1]);
     }
     
@@ -223,8 +222,9 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
         party_vertex_offset[i] = party_vertex_offset[i-1] + VSizes[i-1];
     }
 
-    // For each vertex, compute data_e = sigs + OffOut[j] 
-    std::vector<wire_t> data_e(nV);
+    // For each vertex, compute data_e = sigs + OffOut[j]
+    // Initialize data_e with zero wires to avoid uninitialized memory
+    std::vector<wire_t> data_e(nV, zero_wire);
     for (int i = 0; i < nC; ++i) {
         for (size_t j = 0; j < VSizes[i]; ++j) {
             size_t abs_vertex_idx = party_vertex_offset[i] + j;
@@ -254,31 +254,41 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
 
     // Prepare permutations (two separate permutations: one for T1, one for T2)
     // Permutations set as identity for benchmarking
-    std::vector<std::vector<int>> permutation;
-    
-    // T1 permutation
-    std::vector<int> t1_perm(nV);
-    for (size_t i = 0; i < nV; ++i) {
-        t1_perm[i] = i;
-    }
-    
-    // T2 permutation
-    std::vector<int> t2_perm(add_nE);
-    for (size_t i = 0; i < add_nE; ++i) {
-        t2_perm[i] = i;
-    }
-    
-    // For party 0, we need all parties' permutations
-    // For other parties, just their own permutation
-    if (pid == 0) {
-        // Party 0 stores all parties' permutations
-        // For simplicity, using same permutation for all parties
-        permutation.push_back(t1_perm);  // T1 permutation
-        permutation.push_back(t2_perm);  // T2 permutation
-    } else {
-        // Other parties store their own permutations
-        permutation.push_back(t1_perm);  // T1 permutation
-        permutation.push_back(t2_perm);  // T2 permutation
+    std::vector<std::vector<std::vector<int>>> permutation(nC);
+    std::vector<std::vector<std::vector<int>>> permutation1(nC);
+
+    for (size_t i = 0; i < nC; ++i) {
+        // T1 permutation
+        std::vector<int> t1_perm(nV);
+        for (size_t j = 0; j < nV; ++j) {
+            t1_perm[j] = j;
+        }
+
+        // T2 permutation
+        std::vector<int> t2_perm(add_ESizes[i]);
+        for (size_t j = 0; j < add_ESizes[i]; ++j) {
+            t2_perm[j] = j;
+        }
+        
+        // For party 0, we need all parties' permutations
+        // For other parties, just their own permutation
+        if (pid == 0) {
+            // Party 0 stores all parties' permutations
+            // For simplicity, using same permutation for all parties
+            permutation[i].push_back(t1_perm);  // T1 permutation
+            permutation[i].push_back(t2_perm);  // T2 permutation
+        } else {
+            // Other parties store their own permutations
+            permutation[i].push_back(t1_perm);  // T1 permutation
+            permutation[i].push_back(t2_perm);  // T2 permutation
+        }
+
+        permutation1[i].push_back(t2_perm);
+        if (pid == 0) {
+            for (int p = 1; p < nP; ++p) {
+                permutation1[i].push_back(t2_perm);
+            }
+        }
     }
 
     // Group-wise propagate and index gates
@@ -290,9 +300,9 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
         }
         std::vector<wire_t> subg_new_edge_sigs_values(add_ESizes[i]);
         auto [prop_out_key, prop_out_v] = 
-            circ.addGroupwisePropagateGate(IOut[i], data_e, new_edge_src_group[i], permutation);
+            circ.addGroupwisePropagateGate(IOut[i], data_e, new_edge_src_group[i], permutation[i]);
         auto [out_ind, ind_output_key, ind_output_v] = 
-            circ.addGroupwiseIndexGate(new_edge_src_group[i], prop_out_v, permutation);
+            circ.addGroupwiseIndexGate(new_edge_src_group[i], prop_out_v, permutation1[i]);
         for (int j = 0; j < add_ESizes[i]; ++j) {
             subg_new_edge_sigs_values[j] = 
                 circ.addGate(common::utils::GateType::kAdd, prop_out_v[j], out_ind[j]);
@@ -315,7 +325,7 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
         if (add_ESizes[i] == 0) {
             payloads_out[i] = {};
         } else {
-            payloads_out[i] = addSubCircPermList(circ, new_edge_sigd_values[i], payloads[i], permutation);
+            payloads_out[i] = addSubCircPermList(circ, new_edge_sigd_values[i], payloads[i], permutation1[i]);
         }
     }
     
@@ -346,9 +356,9 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
         }
         std::vector<wire_t> subg_new_edge_sigd_values(add_ESizes[i]);
         auto [prop_out_key, prop_out_v] = 
-            circ.addGroupwisePropagateGate(IIn[i], data_e, new_edge_dest_group[i], permutation);
+            circ.addGroupwisePropagateGate(IIn[i], data_e, new_edge_dest_group[i], permutation[i]);
         auto [out_ind, ind_output_key, ind_output_v] = 
-            circ.addGroupwiseIndexGate(new_edge_dest_group[i], prop_out_v, permutation);
+            circ.addGroupwiseIndexGate(new_edge_dest_group[i], prop_out_v, permutation1[i]);
         for (int j = 0; j < add_ESizes[i]; ++j) {
             subg_new_edge_sigd_values[j] = 
                 circ.addGate(common::utils::GateType::kAdd, prop_out_v[j], out_ind[j]);
@@ -362,7 +372,7 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
             continue;
         }
         payloads[i][0] = new_edge_overall_sigd_values[i];
-        payloads_out[i] = addSubCircPermList(circ, payloads_out[i][1], payloads[i], permutation);
+        payloads_out[i] = addSubCircPermList(circ, payloads_out[i][1], payloads[i], permutation1[i]);
     }
 
     // Flatten (original) G
@@ -402,82 +412,94 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
         }
     }
 
-    // Add in dummy entries for edges to Vout_agg, Vin_agg
-    std::vector<wire_t> Gout(vec_size);
-    std::vector<wire_t> Gin(vec_size);
-
+    // Update position maps for vertices
+    
+    std::vector<wire_t> updated_sigs(vec_size);
+    std::vector<wire_t> updated_sigd(vec_size);
     for (int i = 0; i < nV; ++i) {
-        Gout[i] = Vout_agg[i];
-        Gin[i] = Vin_agg[i];
+        updated_sigs[i] = circ.addGate(common::utils::GateType::kAdd, sigs[i], OffOut[i]);
+        updated_sigd[i] = circ.addGate(common::utils::GateType::kAdd, sigd[i], OffIn[i]);
+    }
+
+    std::vector<int> base_perm2(vec_size);
+    for (size_t i = 0; i < vec_size; ++i) {
+        base_perm2[i] = static_cast<int>(i);
+    }
+    std::vector<std::vector<int>> permutation2;
+    permutation2.push_back(base_perm2);
+    if (pid == 0) {
+        for (int i = 1; i < nP; ++i) {
+            permutation2.push_back(base_perm2);
+        }
+    }
+
+    // Propagate OffOut
+    std::vector<wire_t> Gout(vec_size);
+    for (int i = 0; i < nV; ++i) {
+        Gout[i] = OffOut[i];
     }
     for (int i = 0; i < nE; ++i) {
         Gout[nV + i] = circ.addConstOpGate(common::utils::GateType::kConstAdd, zero_wire, 0);
+    }
+    auto prop_out = addSubCircPropagate(circ, sigs, Gout, nV, permutation2);
+    
+    // Reorder sigv to source order
+    auto sigv_s = addSubCircPermList(circ, sigs, {sigv}, permutation2)[0];
+
+    // Reorder to vertex order
+    auto out_v = addSubCircPermList(circ, sigv_s, {prop_out}, permutation2)[0];
+
+    // Update sigs for existing edges
+    for (int i = nV; i < vec_size; ++i) {
+        updated_sigs[i] = circ.addGate(common::utils::GateType::kAdd, sigs[i], out_v[i]);
+    }
+
+    // Propagate OffIn
+    std::vector<wire_t> Gin(vec_size);
+    for (int i = 0; i < nV; ++i) {
+        Gin[i] = OffIn[i];
+    }
+    for (int i = 0; i < nE; ++i) {
         Gin[nV + i] = circ.addConstOpGate(common::utils::GateType::kConstAdd, zero_wire, 0);
     }
+    auto prop_in = addSubCircPropagate(circ, sigs, Gin, nV, permutation2, true);
+
+    // Reorder to vertex order
+    auto in_v = addSubCircPermList(circ, sigv, {prop_in}, permutation2)[0];
+
+    // Update sigs for existing edges
+    for (int i = nV; i < vec_size; ++i) {
+        updated_sigd[i] = circ.addGate(common::utils::GateType::kAdd, sigd[i], in_v[i]);
+    }
     
-    // Reorder G, Gout, Gin to source order 
-    std::vector<std::vector<wire_t>> G_payload(5);
-    G_payload[0] = sigs;
-    G_payload[1] = sigv;
-    G_payload[2] = sigd;
-    G_payload[3] = Gout;
-    G_payload[4] = Gin;
-
-    std::vector<std::vector<wire_t>> G_reordered = addSubCircPermList(circ, sigs, G_payload, permutation);
-
-    // Update sigs of existing entries using a running wire_t accumulator
-    std::vector<wire_t> updated_sigs(vec_size);
-    wire_t Gout_acc = zero_wire;
-    for (int i = 0; i < vec_size; ++i) {
-        updated_sigs[i] = circ.addGate(common::utils::GateType::kAdd, G_reordered[0][i], Gout_acc);
-        Gout_acc = circ.addGate(common::utils::GateType::kAdd, Gout_acc, G_reordered[3][i]);
-    }
-
-    // Reorder G, Gin to destination order
-    G_payload[0] = updated_sigs;
-    G_payload[1] = G_reordered[1];
-    G_payload[2] = G_reordered[2];
-    G_payload[3] = G_reordered[4]; // Don't need Gout anymore
-
-    // drop the last element from G_payload
-    G_payload.pop_back();
-    G_reordered.pop_back();
-
-    G_reordered = addSubCircPermList(circ, G_reordered[2], G_payload, permutation);
-
-    // Update sigd of existing entries
-    std::vector<wire_t> updated_sigd(vec_size);
-    wire_t Gin_acc = zero_wire;
-    for (int i = 0; i < vec_size; ++i) {
-        updated_sigd[i] = circ.addGate(common::utils::GateType::kAdd, G_reordered[2][i], Gin_acc);
-        Gin_acc = circ.addGate(common::utils::GateType::kAdd, Gin_acc, G_reordered[3][i]);
-    }
-
-    // Reorder G to vertex order
-    G_payload[0] = G_reordered[0];
-    G_payload[1] = G_reordered[1];
-    G_payload[2] = updated_sigd;
-
-    G_payload.pop_back();
-    G_reordered.pop_back();
-
-    G_reordered = addSubCircPermList(circ, G_reordered[1], G_payload, permutation);
-
-    // Update sigv and set outputs
     index = 0;
     for (int i = 0; i < nV; ++i) { // Vertices
         circ.setAsOutput(src[i]);
         circ.setAsOutput(dst[i]);
         circ.setAsOutput(isV[i]);
         circ.setAsOutput(data[i]);
-        circ.setAsOutput(G_reordered[0][i]); // sigs
-        circ.setAsOutput(G_reordered[1][i]); // sigv
-        circ.setAsOutput(G_reordered[2][i]); // sigd
+        circ.setAsOutput(updated_sigs[i]); 
+        circ.setAsOutput(sigv[i]);
+        circ.setAsOutput(updated_sigd[i]); 
         index++;
     }
+
     wire_t index_wire;
-    for (int i = 0; i < nC; ++i) { // New edges
-        for (int j = 0; j < add_ESizes[i]; ++j){
+    int edge_index = 0;
+    for (int i = 0; i < nC; ++i) { // Edges
+        for (int j = 0; j < ESizes[i]; ++j) { // Existing edges
+            circ.setAsOutput(edge_src_values[i][j]);
+            circ.setAsOutput(edge_dst_values[i][j]);
+            circ.setAsOutput(edge_isV_values[i][j]);
+            circ.setAsOutput(edge_data_values[i][j]);
+            circ.setAsOutput(updated_sigs[nV + edge_index]); // sigs
+            index_wire = circ.addConstOpGate(common::utils::GateType::kConstAdd, zero_wire, Ring(index));
+            circ.setAsOutput(index_wire); // sigv
+            circ.setAsOutput(updated_sigd[nV + edge_index]); // sigd
+            index++;
+            edge_index++;
+        }
+        for (int j = 0; j < add_ESizes[i]; ++j){ // New edges
             circ.setAsOutput(new_edge_src_values[i][j]);
             circ.setAsOutput(new_edge_dst_values[i][j]);
             circ.setAsOutput(new_edge_isV_values[i][j]);
@@ -490,17 +512,17 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
         }
     }
 
-    for (int i = 0; i < nE; ++i) { // Existing edges
-        circ.setAsOutput(src[nV + i]);
-        circ.setAsOutput(dst[nV + i]);
-        circ.setAsOutput(isV[nV + i]);
-        circ.setAsOutput(data[nV + i]);
-        circ.setAsOutput(G_reordered[0][nV + i]); // sigs
-        index_wire = circ.addConstOpGate(common::utils::GateType::kConstAdd, zero_wire, Ring(index));
-        circ.setAsOutput(index_wire); // sigv
-        circ.setAsOutput(G_reordered[2][nV + i]); // sigd
-        index++;
-    }
+    // for (int i = 0; i < nE; ++i) { // Existing edges
+    //     circ.setAsOutput(src[nV + i]);
+    //     circ.setAsOutput(dst[nV + i]);
+    //     circ.setAsOutput(isV[nV + i]);
+    //     circ.setAsOutput(data[nV + i]);
+    //     circ.setAsOutput(G_reordered[0][nV + i]); // sigs
+    //     index_wire = circ.addConstOpGate(common::utils::GateType::kConstAdd, zero_wire, Ring(index));
+    //     circ.setAsOutput(index_wire); // sigv
+    //     circ.setAsOutput(G_reordered[2][nV + i]); // sigd
+    //     index++;
+    // }
     
     return circ;
 }
@@ -589,6 +611,9 @@ void benchmark(const bpo::variables_map& opts) {
 
     std::cout << "--- Circuit ---" << std::endl;
     std::cout << circ << std::endl;
+    std::cout << "[DEBUG] Party " << pid << ": circuit levels = " << circ.gates_by_level.size()
+              << ", total gates = " << circ.num_gates
+              << ", total outputs = " << circ.outputs.size() << std::endl;
     
     std::unordered_map<common::utils::wire_t, int> input_pid_map;
     for (const auto& g : circ.gates_by_level[0]) {
@@ -633,7 +658,7 @@ void benchmark(const bpo::variables_map& opts) {
         std::cout << "\n=== Daglist Distribution ===" << std::endl;
         for (int i = 0; i < nC; ++i) {
             std::cout << "Client " << i << ": " << dist_daglist.VSizes[i] << " vertices, "
-                    << dist_daglist.ESizes[i] << " edges" << std::endl;
+                    << dist_daglist.ESizes[i] << " edges, " << dist_daglist.InsertE[i].size() << " to insert" << std::endl;
         }
         std::cout << "============================\n" << std::endl;
     
@@ -649,7 +674,6 @@ void benchmark(const bpo::variables_map& opts) {
             all_input_values.push_back(dist_daglist.VertexLists[c][i].sigs);
             all_input_values.push_back(dist_daglist.VertexLists[c][i].sigv);
             all_input_values.push_back(dist_daglist.VertexLists[c][i].sigd);
-            all_input_values.push_back(dist_daglist.isDelV[c][i]);
         }
 
         for (size_t i = 0; i < dist_daglist.ESizes[c]; ++i) {
@@ -660,10 +684,30 @@ void benchmark(const bpo::variables_map& opts) {
             all_input_values.push_back(dist_daglist.EdgeLists[c][i].sigs);
             all_input_values.push_back(dist_daglist.EdgeLists[c][i].sigv);
             all_input_values.push_back(dist_daglist.EdgeLists[c][i].sigd);
-            all_input_values.push_back(dist_daglist.isDelE[c][i]);
         }
     }
-        
+
+    // Collect new edges to be inserted
+    for (int c = 0; c < nC; ++c) {
+        for (size_t i = 0; i < dist_daglist.InsertE[c].size(); ++i) {
+            all_input_values.push_back(dist_daglist.InsertE[c][i].src);
+            all_input_values.push_back(dist_daglist.InsertE[c][i].dst);
+            all_input_values.push_back(dist_daglist.InsertE[c][i].isV);
+            all_input_values.push_back(dist_daglist.InsertE[c][i].data);
+            all_input_values.push_back(dist_daglist.InsertE[c][i].sigs);
+            all_input_values.push_back(dist_daglist.InsertE[c][i].sigv);
+            all_input_values.push_back(dist_daglist.InsertE[c][i].sigd);
+        }
+    }
+
+    // Collect VIn, VOut
+    for (int c = 0; c < nC; ++c) {
+        for (size_t j = 0; j < nV; ++j) {
+            all_input_values.push_back(dist_daglist.VOut[c][j]);
+            all_input_values.push_back(dist_daglist.VIn[c][j]);
+        }
+    }
+
                 // Map collected values into circuit input wires (in order)
         size_t wire_idx = 0;
         for (size_t i = 0; i < all_input_values.size() && wire_idx < input_wires.size(); ++i) {

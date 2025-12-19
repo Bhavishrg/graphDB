@@ -101,6 +101,8 @@ struct DistributedDaglist {
     // Operation lists for graph modifications
     vector<vector<DagEntry>> InsertV;  // InsertV[i] = vertices to insert for party i
     vector<vector<DagEntry>> InsertE;  // InsertE[i] = edges to insert for party i
+    vector<vector<Ring>> VIn;       // VIn[i][j]  1/0 indicating if j-th vertex of party i has an in-edge added
+    vector<vector<Ring>> VOut;      // VOut[i][j] 1/0 indicating if j-th vertex of party i has an out-edge added
     vector<vector<Ring>> ChangeV;   // ChangeV[i][j] = data change for j-th vertex of party i
     vector<vector<Ring>> isChangeV; // ChangeV[i][j] = 1/0 indicating if j-th vertex of party i is changed
     vector<vector<Ring>> ChangeE;   // ChangeE[i][j] = data change for j-th edge of party i
@@ -117,6 +119,8 @@ struct DistributedDaglist {
         ESizes.resize(np, 0);
         InsertV.resize(np);
         InsertE.resize(np);
+        VIn.resize(np);
+        VOut.resize(np);
         ChangeV.resize(np);
         ChangeE.resize(np);
         isChangeV.resize(np);
@@ -133,6 +137,8 @@ struct DistributedDaglist {
         ESizes.resize(np, 0);
         InsertV.resize(np);
         InsertE.resize(np);
+        VIn.resize(np);
+        VOut.resize(np);
         ChangeV.resize(np);
         ChangeE.resize(np);
         isChangeV.resize(np);
@@ -827,6 +833,12 @@ inline DistributedDaglist generate_random_edges_to_insert(const DistributedDagli
     inserts_per_client[0] += remaining;
   }
   
+  // Initialize VIn and VOut with zeros (each entry has size nV for all vertices)
+  for (int c = 0; c < result.num_clients; ++c) {
+    result.VIn[c].resize(dist_daglist.nV, 0);
+    result.VOut[c].resize(dist_daglist.nV, 0);
+  }
+  
   // Generate random edge entries for each client
   unordered_set<Ring> seen;
   
@@ -846,6 +858,12 @@ inline DistributedDaglist generate_random_edges_to_insert(const DistributedDagli
       // sigs, sigv, sigd will be computed during circuit generation
       DagEntry new_edge(src, dst, isV, data, 0, 0, 0);
       result.InsertE[c].push_back(new_edge);
+      
+      // Mark source vertex as having an outgoing edge
+      result.VOut[c][src] = 1;
+      
+      // Mark destination vertex as having an incoming edge
+      result.VIn[c][dst] = 1;
     }
   }
   

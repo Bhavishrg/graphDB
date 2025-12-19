@@ -140,7 +140,7 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
     }
 
     // zero wire for assigning constant value to wire
-    auto zero_wire = circ.newInputWire();
+    auto zero_wire = circ.addGate(kSub, vertex_src_values[0][0], vertex_src_values[0][0]);
 
     // Compute per-client delta values (prefix sums of new vertices)
     std::vector<size_t> delta(nC);
@@ -182,10 +182,10 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
         for (int k = 0; k < add_VSizes[i]; ++k) {
             new_vertex_sigv_values[i][k] = 
                 circ.addConstOpGate(common::utils::GateType::kConstAdd, 
-                                    updated_vertex_sigv_values[i][VSizes[i]-1], Ring(k));
+                                    updated_vertex_sigv_values[i][VSizes[i]-1], Ring(k+1));
             new_vertex_sigd_values[i][k] = 
                 circ.addConstOpGate(common::utils::GateType::kConstAdd, 
-                                    updated_vertex_sigd_values[i][VSizes[i]-1], Ring(k));
+                                    updated_vertex_sigd_values[i][VSizes[i]-1], Ring(k+1));
         }   
     }
 
@@ -193,13 +193,13 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
         for (int k = 0; k < add_VSizes[i]; ++k) {
             new_vertex_sigs_values[i][k] = 
                 circ.addConstOpGate(common::utils::GateType::kConstAdd, 
-                                    updated_vertex_sigs_values[i+1][0], Ring(k*-1));
+                                    updated_vertex_sigs_values[i+1][0], Ring(k*-1 - 1));
         } 
     }
     for (int k = 0; k < add_VSizes[nC - 1]; ++k) {
         new_vertex_sigs_values[nC - 1][k] = 
                 circ.addConstOpGate(common::utils::GateType::kConstAdd, 
-                                    zero_wire, Ring(vec_size + delta[nC - 1] + k));
+                                    zero_wire, Ring(vec_size + delta[nC - 1] + k + 1));
     }
 
     // Assign positions of edges
@@ -214,8 +214,8 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
     }
     for (size_t i = 0; i < nC; ++i) {
         for (size_t j = 0; j < ESizes[i]; ++j) {
-            // Initialize wires to zero (don't set input)
-            delta_wires[index] = circ.newInputWire();
+            // Initialize wires to zero
+            delta_wires[index] = circ.addGate(common::utils::GateType::kSub, vertex_src_values[0][0], vertex_src_values[0][0]);
             index++;
         }
     }
@@ -248,13 +248,16 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
     std::vector<std::vector<int>> permutation;
     permutation.push_back(base_perm);
     if (pid == 0) {
-        for (int i = 1; i < nP; ++i) {
+        for (int p = 1; p < nP; ++p) {
             permutation.push_back(base_perm);
         }
     }
 
     // Propagate
     auto prop_delta = addSubCircPropagate(circ, sigd, delta_wires, nV, permutation, true);
+
+    // Reorder sigv to destination order
+    auto sigv_d = addSubCircPermList(circ, sigd, {sigv}, permutation)[0];
 
     // Reorder back to vertex order
     auto delta_v = addSubCircPermList(circ, sigv, {prop_delta}, permutation)[0];
