@@ -7,6 +7,7 @@
 #include <boost/program_options.hpp>
 #include <cmath>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <omp.h>
@@ -17,6 +18,134 @@
 using namespace graphdb;
 using json = nlohmann::json;
 namespace bpo = boost::program_options;
+
+void printDaglistInfo(const DistributedDaglist& dist_daglist, const std::string& title) {
+    std::cout << "\n" << std::string(60, '=') << std::endl;
+    std::cout << title << std::endl;
+    std::cout << std::string(60, '=') << std::endl;
+    
+    int nC = dist_daglist.num_clients;
+    int total_vertices = 0, total_edges = 0;
+    int total_del_vertices = 0, total_del_edges = 0;
+    
+    for (int i = 0; i < nC; ++i) {
+        total_vertices += dist_daglist.VSizes[i];
+        total_edges += dist_daglist.ESizes[i];
+        
+        // Count deletions
+        for (size_t j = 0; j < dist_daglist.VSizes[i]; ++j) {
+            if (dist_daglist.isDelV[i][j] == Ring(1)) total_del_vertices++;
+        }
+        for (size_t j = 0; j < dist_daglist.ESizes[i]; ++j) {
+            if (dist_daglist.isDelE[i][j] == Ring(1)) total_del_edges++;
+        }
+    }
+    
+    std::cout << "Total Vertices: " << total_vertices << " (Marked for deletion: " << total_del_vertices << ")" << std::endl;
+    std::cout << "Total Edges: " << total_edges << " (Marked for deletion: " << total_del_edges << ")" << std::endl;
+    std::cout << "Total Entries: " << (total_vertices + total_edges) << std::endl;
+    std::cout << "Expected after deletion: " << (total_vertices + total_edges - total_del_vertices - total_del_edges) << std::endl;
+    std::cout << std::endl;
+    
+    // Print distribution per client
+    std::cout << "Distribution per Client:" << std::endl;
+    for (int i = 0; i < nC; ++i) {
+        std::cout << "  Client " << i << ": " << dist_daglist.VSizes[i] << " vertices, "
+                  << dist_daglist.ESizes[i] << " edges" << std::endl;
+    }
+    std::cout << std::endl;
+    
+    // Print sample vertices
+    std::cout << "Sample Vertices (first 10):" << std::endl;
+    std::cout << "  ID | Src | Dst | Data | isV | sigv | sigs | sigd | Del" << std::endl;
+    std::cout << "  " << std::string(70, '-') << std::endl;
+    int count = 0;
+    for (int c = 0; c < nC && count < 10; ++c) {
+        for (size_t i = 0; i < dist_daglist.VSizes[c] && count < 10; ++i) {
+            const auto& v = dist_daglist.VertexLists[c][i];
+            std::cout << "  " << std::setw(2) << count << " | "
+                      << std::setw(3) << v.src << " | "
+                      << std::setw(3) << v.dst << " | "
+                      << std::setw(4) << v.data << " | "
+                      << std::setw(3) << v.isV << " | "
+                      << std::setw(4) << v.sigv << " | "
+                      << std::setw(4) << v.sigs << " | "
+                      << std::setw(4) << v.sigd << " | "
+                      << std::setw(3) << dist_daglist.isDelV[c][i] << std::endl;
+            count++;
+        }
+    }
+    std::cout << std::endl;
+    
+    // Print sample edges
+    std::cout << "Sample Edges (first 10):" << std::endl;
+    std::cout << "  ID | Src | Dst | Data | isV | sigv | sigs | sigd | Del" << std::endl;
+    std::cout << "  " << std::string(70, '-') << std::endl;
+    count = 0;
+    for (int c = 0; c < nC && count < 10; ++c) {
+        for (size_t i = 0; i < dist_daglist.ESizes[c] && count < 10; ++i) {
+            const auto& e = dist_daglist.EdgeLists[c][i];
+            std::cout << "  " << std::setw(2) << count << " | "
+                      << std::setw(3) << e.src << " | "
+                      << std::setw(3) << e.dst << " | "
+                      << std::setw(4) << e.data << " | "
+                      << std::setw(3) << e.isV << " | "
+                      << std::setw(4) << e.sigv << " | "
+                      << std::setw(4) << e.sigs << " | "
+                      << std::setw(4) << e.sigd << " | "
+                      << std::setw(3) << dist_daglist.isDelE[c][i] << std::endl;
+            count++;
+        }
+    }
+    std::cout << std::string(60, '=') << std::endl;
+}
+
+void printOutputs(const std::vector<Ring>& outputs, size_t vec_size) {
+    std::cout << "\n" << std::string(60, '=') << std::endl;
+    std::cout << "OUTPUT: Compacted Graph After Deletion" << std::endl;
+    std::cout << std::string(60, '=') << std::endl;
+    
+    if (outputs.size() < 1) {
+        std::cout << "No outputs received!" << std::endl;
+        return;
+    }
+    
+    Ring num_remaining = outputs[0];
+    std::cout << "Number of entries remaining: " << num_remaining << std::endl;
+    std::cout << "(out of " << vec_size << " original entries)" << std::endl;
+    std::cout << "Entries deleted: " << (vec_size - num_remaining) << std::endl;
+    std::cout << std::endl;
+    
+    size_t expected_outputs = 1 + vec_size * 7; // num_remaining + 7 fields per entry
+    if (outputs.size() < expected_outputs) {
+        std::cout << "Warning: Received " << outputs.size() << " outputs, expected " << expected_outputs << std::endl;
+        return;
+    }
+    
+    std::cout << "Compacted Entries (up to first 20):" << std::endl;
+    std::cout << "  ID | Src | Dst | Data  | isV | sigv | sigs | sigd" << std::endl;
+    std::cout << "  " << std::string(60, '-') << std::endl;
+    
+    size_t limit = std::min(static_cast<size_t>(num_remaining), size_t(20));
+    for (size_t i = 0; i < limit; ++i) {
+        size_t base = 1 + i * 7;
+        if (base + 6 < outputs.size()) {
+            std::cout << "  " << std::setw(2) << i << " | "
+                      << std::setw(3) << outputs[base + 0] << " | "
+                      << std::setw(3) << outputs[base + 1] << " | "
+                      << std::setw(4) << outputs[base + 2] << " | "
+                      << std::setw(4) << outputs[base + 3] << " | "
+                      << std::setw(4) << outputs[base + 4] << " | "
+                      << std::setw(4) << outputs[base + 5] << " | "
+                      << std::setw(4) << outputs[base + 6] << std::endl;
+        }
+    }
+    
+    if (num_remaining > 20) {
+        std::cout << "  ... (" << (num_remaining - 20) << " more entries)" << std::endl;
+    }
+    std::cout << std::string(60, '=') << std::endl;
+}
 
 common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist dist_daglist) {
 
@@ -172,15 +301,15 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
     }
 
     // Propagate del tag to outgoing edges and reorder them back to vertex order
-    auto del_S = addSubCircPropagate(circ, sigs, del_v, nV, permutation);
+    auto del_S = circ.addSubCircPropagate(sigs, del_v, nV, permutation);
     // reorder del_S to vertex order
-    auto sigs_to_sigv = addSubCircPermList(circ, sigs, {sigv}, permutation)[0];
-    del_S = addSubCircPermList(circ, sigs_to_sigv, {del_S}, permutation)[0];
+    auto sigs_to_sigv = circ.addSubCircPermList(sigs, {sigv}, permutation)[0];
+    del_S = circ.addSubCircPermList(sigs_to_sigv, {del_S}, permutation)[0];
 
     // Propagate del tag to incoming edges and reorder them back to vertex order
-    auto del_D = addSubCircPropagate(circ, sigd, del_v, nV, permutation, true);
-    auto sigd_to_sigv = addSubCircPermList(circ, sigd, {sigv}, permutation)[0];
-    del_D = addSubCircPermList(circ, sigd_to_sigv, {del_D}, permutation)[0];
+    auto del_D = circ.addSubCircPropagate(sigd, del_v, nV, permutation, true);
+    auto sigd_to_sigv = circ.addSubCircPermList(sigd, {sigv}, permutation)[0];
+    del_D = circ.addSubCircPermList(sigd_to_sigv, {del_D}, permutation)[0];
 
     // Combine del tags
     std::vector<wire_t> del_final(vec_size);
@@ -216,8 +345,8 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
     payload2.push_back(del_final);
 
     // // Reorder to source order and destination order
-    auto payload_s = addSubCircPermList(circ, sigs, payload1, permutation);
-    auto payload_d = addSubCircPermList(circ, sigd, payload2, permutation);
+    auto payload_s = circ.addSubCircPermList(sigs, payload1, permutation);
+    auto payload_d = circ.addSubCircPermList(sigd, payload2, permutation);
 
     // // Update sigs
     std::vector<wire_t> updated_sigs(vec_size);
@@ -232,7 +361,7 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
         prefix_sum_s = circ.addGate(common::utils::GateType::kAdd, prefix_sum_s, del_s[i]);
     }
     payload_s[0] = updated_sigs; 
-    payload_s = addSubCircPermList(circ, sigs_to_sigv, payload_s, permutation);
+    payload_s = circ.addSubCircPermList(sigs_to_sigv, payload_s, permutation);
     updated_sigs = payload_s[0];
 
     // // Update sigd
@@ -247,17 +376,17 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
         prefix_sum_d = circ.addGate(common::utils::GateType::kAdd, prefix_sum_d, del_d[i]);
     }
     payload_d[0] = updated_sigd; 
-    payload_d = addSubCircPermList(circ, sigs_to_sigv, payload_d, permutation);
-    updated_sigd = payload_d[0];
+    payload_d = circ.addSubCircPermList(sigs_to_sigv, payload_d, permutation);
 
     // Missing isV?
-    payload1.resize(6);
+    payload1.resize(7);
     payload1[0] = src;
     payload1[1] = dst;
     payload1[2] = data;
-    payload1[3] = updated_sigv;
-    payload1[4] = updated_sigs;
-    payload1[5] = updated_sigd;
+    payload1[3] = isV;
+    payload1[4] = updated_sigv;
+    payload1[5] = updated_sigs;
+    payload1[6] = updated_sigd;
 
     auto [num_remaining, payload1_deleted] = circ.addDeleteWiresGate(del_final, payload1, permutation);
 
@@ -265,9 +394,10 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
     auto src_compacted = payload1_deleted[0];
     auto dst_compacted = payload1_deleted[1];
     auto data_compacted = payload1_deleted[2];
-    auto sigv_compacted = payload1_deleted[3];
-    auto sigs_compacted = payload1_deleted[4];
-    auto sigd_compacted = payload1_deleted[5];
+    auto isV_compacted = payload1_deleted[3];
+    auto sigv_compacted = payload1_deleted[4];
+    auto sigs_compacted = payload1_deleted[5];
+    auto sigd_compacted = payload1_deleted[6];
     
     
     // Set outputs
@@ -278,6 +408,7 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
         circ.setAsOutput(src_compacted[i]);
         circ.setAsOutput(dst_compacted[i]);
         circ.setAsOutput(data_compacted[i]);
+        circ.setAsOutput(isV_compacted[i]);
         circ.setAsOutput(sigv_compacted[i]);
         circ.setAsOutput(sigs_compacted[i]);
         circ.setAsOutput(sigd_compacted[i]);
@@ -360,6 +491,10 @@ void benchmark(const bpo::variables_map& opts) {
     std::cout << "Generating random deletion tags for " << num_deletes << " entries..." << std::endl;
     dist_daglist = generate_random_entry_deletes(dist_daglist, num_deletes, seed);
 
+    // Print input daglist information
+    if (pid == 1) {
+        printDaglistInfo(dist_daglist, "INPUT: Graph Before Deletion");
+    }
 
     StatsPoint start(*network);
     network->sync();
@@ -408,15 +543,6 @@ void benchmark(const bpo::variables_map& opts) {
     std::vector<Ring> graph_input_values;
 
     if (pid == 1) {
-
-        // Print distribution info
-        std::cout << "\n=== Daglist Distribution ===" << std::endl;
-        for (int i = 0; i < nC; ++i) {
-            std::cout << "Client " << i << ": " << dist_daglist.VSizes[i] << " vertices, "
-                    << dist_daglist.ESizes[i] << " edges" << std::endl;
-        }
-        std::cout << "============================\n" << std::endl;
-    
         std::vector<Ring> all_input_values;
         
     // Collect all vertex and edge fields for all clients
@@ -452,13 +578,6 @@ void benchmark(const bpo::variables_map& opts) {
         
         // Store for verification
         graph_input_values = all_input_values;
-        
-        std::cout << "\n=== DEBUG: First 20 inputs being set ===" << std::endl;
-        size_t debug_count = std::min(size_t(100), all_input_values.size());
-        for (size_t i = 0; i < debug_count; ++i) {
-            std::cout << "Input[" << i << "] = " << all_input_values[i] << std::endl;
-        }
-        std::cout << "===================================\n" << std::endl;
     }
 
     std::cout << "Total inputs set by party " << pid << ": " << inputs.size() << std::endl;
@@ -476,8 +595,9 @@ void benchmark(const bpo::variables_map& opts) {
     StatsPoint online_start(*network);
     for (size_t i = 0; i < circ.gates_by_level.size(); ++i) {
         eval.evaluateGatesAtDepth(i);
+        network->sync();
+        network->flush();
     }
-    network->flush();
     network->sync();
     StatsPoint online_end(*network);
     std::cout << "Online evaluation complete" << std::endl;
@@ -488,22 +608,10 @@ void benchmark(const bpo::variables_map& opts) {
     network->sync();
     std::cout << "Number of outputs: " << outputs.size() << std::endl;
     
-
-
-    if (outputs.size() > 0) {
-        std::cout << "\n=== DEBUG: Party " << pid << " outputs ===" << std::endl;
-        std::cout << "Total outputs: " << outputs.size() << std::endl;
-        
-        if (pid == 1 && outputs.size() > 0) {
-        std::cout << "\n=== DEBUG: First 20 raw outputs ===" << std::endl;
-        for (size_t i = 0; i < std::min(size_t(100), outputs.size()); ++i) {
-            std::cout << "Output[" << i << "] = " << outputs[i] << std::endl;
-        }
-        std::cout << "===================================\n" << std::endl;
-        }
-        std::cout << "===================================\n" << std::endl;
+    // Print formatted outputs
+    if (pid == 1 && outputs.size() > 0) {
+        printOutputs(outputs, vec_size);
     }
-
 
     StatsPoint end(*network);
 

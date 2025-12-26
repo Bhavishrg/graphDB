@@ -16,6 +16,114 @@ using namespace graphdb;
 using json = nlohmann::json;
 namespace bpo = boost::program_options;
 
+// Helper function to generate different position map test cases
+std::vector<Ring> generatePositionMap(size_t vec_size, int test_case, size_t seed) {
+    std::vector<Ring> position_map(vec_size);
+    
+    switch (test_case) {
+        case 0: // Identity permutation
+            for (size_t i = 0; i < vec_size; ++i) {
+                position_map[i] = static_cast<Ring>(i);
+            }
+            break;
+            
+        case 1: // Reverse permutation
+            for (size_t i = 0; i < vec_size; ++i) {
+                position_map[i] = static_cast<Ring>(vec_size - 1 - i);
+            }
+            break;
+            
+        case 2: // Swap pairs (0<->1, 2<->3, etc.)
+            for (size_t i = 0; i < vec_size; ++i) {
+                if (i % 2 == 0 && i + 1 < vec_size) {
+                    position_map[i] = static_cast<Ring>(i + 1);
+                } else if (i % 2 == 1) {
+                    position_map[i] = static_cast<Ring>(i - 1);
+                } else {
+                    position_map[i] = static_cast<Ring>(i);
+                }
+            }
+            break;
+            
+        case 3: // Rotate left by 1
+            for (size_t i = 0; i < vec_size; ++i) {
+                position_map[i] = static_cast<Ring>((i + 1) % vec_size);
+            }
+            break;
+            
+        case 4: // Rotate right by 1
+            for (size_t i = 0; i < vec_size; ++i) {
+                position_map[i] = static_cast<Ring>((i + vec_size - 1) % vec_size);
+            }
+            break;
+            
+        case 5: // Random permutation
+            {
+                std::vector<Ring> indices(vec_size);
+                for (size_t i = 0; i < vec_size; ++i) {
+                    indices[i] = static_cast<Ring>(i);
+                }
+                // Shuffle using seed
+                srand(seed);
+                for (size_t i = vec_size - 1; i > 0; --i) {
+                    size_t j = rand() % (i + 1);
+                    std::swap(indices[i], indices[j]);
+                }
+                position_map = indices;
+            }
+            break;
+            
+        case 6: // Blocks swap (first half <-> second half)
+            {
+                size_t half = vec_size / 2;
+                for (size_t i = 0; i < half; ++i) {
+                    position_map[i] = static_cast<Ring>(i + half);
+                }
+                for (size_t i = half; i < vec_size; ++i) {
+                    position_map[i] = static_cast<Ring>(i - half);
+                }
+            }
+            break;
+            
+        case 7: // Even-odd split (evens first, then odds)
+            {
+                size_t even_idx = 0, odd_idx = (vec_size + 1) / 2;
+                for (size_t i = 0; i < vec_size; ++i) {
+                    if (i % 2 == 0) {
+                        position_map[i] = static_cast<Ring>(even_idx++);
+                    } else {
+                        position_map[i] = static_cast<Ring>(odd_idx++);
+                    }
+                }
+            }
+            break;
+            
+        default:
+            // Default to identity
+            for (size_t i = 0; i < vec_size; ++i) {
+                position_map[i] = static_cast<Ring>(i);
+            }
+            break;
+    }
+    
+    return position_map;
+}
+
+// Get description of test case
+const char* getTestCaseDescription(int test_case) {
+    switch (test_case) {
+        case 0: return "Identity (no permutation)";
+        case 1: return "Reverse";
+        case 2: return "Swap pairs";
+        case 3: return "Rotate left by 1";
+        case 4: return "Rotate right by 1";
+        case 5: return "Random permutation";
+        case 6: return "Blocks swap (first half <-> second half)";
+        case 7: return "Even-odd split";
+        default: return "Unknown";
+    }
+}
+
 common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size, size_t num_payloads) {
 
     std::cout << "Generating circuit with vec_size=" << vec_size 
@@ -41,7 +149,12 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size, s
     }
 
     // Add rewire gate with reconstructed position map
-    auto outputs = circ.addRewireGate(position_map_reconstructed, payloads);
+    auto outputs = circ.addRewireGate(position_map_reconstructed, payloads, 0);
+    std::vector<std::vector<common::utils::wire_t>> outputs2(num_payloads);
+    // for (size_t p = 0; p < num_payloads; ++p) {
+    //     outputs2[p] = outputs1[p];
+    // }
+    // auto outputs = circ.addRewireGate(position_map_reconstructed, outputs2, 1);
 
     // Set outputs
     for (size_t p = 0; p < num_payloads; ++p) {
@@ -145,14 +258,14 @@ void benchmark(const bpo::variables_map& opts) {
     std::sort(input_wires.begin(), input_wires.end());
 
     if (!input_wires.empty()) {
+        auto test_case = opts["test-case"].as<int>();
+        
         std::cout << "\n=== SETTING TEST INPUTS ===" << std::endl;
         std::cout << "Party " << pid << " setting inputs:" << std::endl;
+        std::cout << "Test case: " << test_case << " - " << getTestCaseDescription(test_case) << std::endl;
         
-        // Create a test permutation (reverse order for demonstration)
-        std::vector<Ring> position_map_values(vec_size);
-        for (size_t i = 0; i < vec_size; ++i) {
-            position_map_values[i] = static_cast<Ring>(vec_size - 1 - i);  // Reverse permutation
-        }
+        // Generate position map based on test case
+        std::vector<Ring> position_map_values = generatePositionMap(vec_size, test_case, seed);
         
         // Create test payload data
         std::vector<std::vector<Ring>> payload_values(num_payloads);
@@ -199,8 +312,10 @@ void benchmark(const bpo::variables_map& opts) {
     eval.setInputs(inputs);
     
     std::cout << "Starting online evaluation" << std::endl;
+    std::cout << "DEBUG: Total circuit depth: " << circ.gates_by_level.size() << std::endl;
     StatsPoint online_start(*network);
     for (size_t i = 0; i < circ.gates_by_level.size(); ++i) {
+        std::cout << "DEBUG: Evaluating depth " << i << " with " << circ.gates_by_level[i].size() << " gates" << std::endl;
         eval.evaluateGatesAtDepth(i);
     }
 
@@ -290,7 +405,8 @@ bpo::options_description programOptions() {
         ("port", bpo::value<int>()->default_value(10000), "Base port for networking.")
         ("output,o", bpo::value<std::string>(), "File to save benchmarks.")
         ("repeat,r", bpo::value<size_t>()->default_value(1), "Number of times to run benchmarks.")
-        ("use-pking", bpo::value<bool>()->default_value(true), "Use king party for reconstruction (true) or direct reconstruction (false).");
+        ("use-pking", bpo::value<bool>()->default_value(true), "Use king party for reconstruction (true) or direct reconstruction (false).")
+        ("test-case", bpo::value<int>()->default_value(1), "Position map test case: 0=Identity, 1=Reverse, 2=Swap pairs, 3=Rotate left, 4=Rotate right, 5=Random, 6=Blocks swap, 7=Even-odd split.");
   return desc;
 }
 // clang-format on
@@ -335,3 +451,5 @@ int main(int argc, char* argv[]) {
     }
     return 0;
 }
+
+// ./../run.sh rewire --num-parties 3 --vec-size 10

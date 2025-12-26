@@ -56,7 +56,7 @@ The benchmarks automatically configure socket buffer sizes to prevent deadlocks 
 - 5 parties: ~2 GB per process in socket buffers
 - 10 parties: ~4.5 GB per process in socket buffers
 
-For systems with limited memory (< 32 GB), you may want to reduce buffer sizes in the source code. For systems with abundant memory (> 64 GB), larger buffers can improve performance.
+For systems with limited memory (< 32 GB), you may want to reduce buffer sizes. For systems with abundant memory (> 64 GB), larger buffers can improve performance.
 
 ### System-Level Buffer Limits
 If you encounter socket buffer limitation warnings, you may need to increase system limits:

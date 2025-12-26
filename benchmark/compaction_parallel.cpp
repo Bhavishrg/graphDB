@@ -49,7 +49,7 @@ common::utils::Circuit<Ring> generateParallelCompactionCircuit(int nP, int pid, 
         std::generate(p_vectors1[p].begin(), p_vectors1[p].end(), [&]() { return circ.newInputWire(); });
     }
 
-    auto [t_compacted1, p_compacted1] = circ.addCompactGate(t_vector1, p_vectors1, generatePermutation(vec_size1));
+    auto [t_compacted1, p_compacted1, label_reconstructed1] = circ.addCompactionSubcircuit(t_vector1, p_vectors1, generatePermutation(vec_size1), pid);
 
     // Second compaction gate with vec_size2
     std::vector<common::utils::wire_t> t_vector2(vec_size2);
@@ -60,7 +60,7 @@ common::utils::Circuit<Ring> generateParallelCompactionCircuit(int nP, int pid, 
         std::generate(p_vectors2[p].begin(), p_vectors2[p].end(), [&]() { return circ.newInputWire(); });
     }
 
-    auto [t_compacted2, p_compacted2] = circ.addCompactGate(t_vector2, p_vectors2, generatePermutation(vec_size2));
+    auto [t_compacted2, p_compacted2, label_reconstructed2] = circ.addCompactionSubcircuit(t_vector2, p_vectors2, generatePermutation(vec_size2), pid);
     
     // Set outputs from both compaction gates
     for (size_t i = 0; i < vec_size1; ++i) {
@@ -250,6 +250,8 @@ void benchmark(const bpo::variables_map& opts) {
     StatsPoint online_start(*network);
     for (size_t i = 0; i < circ.gates_by_level.size(); ++i) {
         eval.evaluateGatesAtDepth(i);
+        network->sync();
+        network->flush();
     }
     network->sync();
     StatsPoint online_end(*network);
@@ -377,3 +379,4 @@ int main(int argc, char* argv[]) {
     }
     return 0;
 }
+// usage: ./../run.sh compaction_parallel --num-parties 2 --vec-size1 10 --vec-size2 15

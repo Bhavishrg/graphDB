@@ -284,3 +284,4 @@ int main(int argc, char* argv[]) {
     }
     return 0;
 }
+// usage: ./../run.sh mult --num-parties 2

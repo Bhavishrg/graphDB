@@ -67,22 +67,22 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size,
 
     auto pos_map_v_to_s = sigs_wires;
 
-    auto permuted_maps = addSubCircPermList(circ, pos_map_v_to_s, {sigd_wires, sigv_wires}, permutation);
+    auto permuted_maps = circ.addSubCircPermList(pos_map_v_to_s, {sigd_wires, sigv_wires}, permutation);
     auto pos_map_s_to_d = permuted_maps[0];
-    auto pos_map_d_to_v = addSubCircPermList(circ, pos_map_s_to_d, {permuted_maps[1]}, permutation)[0];
+    auto pos_map_d_to_v = circ.addSubCircPermList(pos_map_s_to_d, {permuted_maps[1]}, permutation)[0];
 
     for (int iter = 0; iter < iterations; ++iter) {
         std::cout << "  Adding BFS iteration " << (iter + 1) << std::endl;
         
         // Propagate step: forward message passing using sigs as position map
-        auto propagated = addSubCircPropagate(circ, pos_map_v_to_s, current_data, num_verts, permutation, false);
+        auto propagated = circ.addSubCircPropagate(pos_map_v_to_s, current_data, num_verts, permutation, false);
         
         // Permutation gate: reorder propagated data using sigd as position map
         std::vector<std::vector<common::utils::wire_t>> payloads = {{propagated}};
-        auto permuted = addSubCircPermList(circ, pos_map_s_to_d, payloads, permutation)[0];
+        auto permuted = circ.addSubCircPermList(pos_map_s_to_d, payloads, permutation)[0];
         
         // Gather step: backward message passing using sigv as position map
-        auto gathered = addSubCircGather(circ, pos_map_d_to_v, permuted, num_verts, permutation);
+        auto gathered = circ.addSubCircGather(pos_map_d_to_v, permuted, num_verts, permutation);
         
         // ApplyV step: update vertex data
         for (size_t i = 0; i < num_verts; ++i) {

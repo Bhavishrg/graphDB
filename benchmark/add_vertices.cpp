@@ -7,6 +7,7 @@
 #include <boost/program_options.hpp>
 #include <cmath>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <omp.h>
@@ -17,6 +18,196 @@
 using namespace graphdb;
 using json = nlohmann::json;
 namespace bpo = boost::program_options;
+
+void printDaglistInfo(const DistributedDaglist& dist_daglist, const std::string& title) {
+    std::cout << "\n" << std::string(60, '=') << std::endl;
+    std::cout << title << std::endl;
+    std::cout << std::string(60, '=') << std::endl;
+    
+    int nC = dist_daglist.num_clients;
+    int total_vertices = 0, total_edges = 0;
+    int total_new_vertices = 0;
+    
+    for (int i = 0; i < nC; ++i) {
+        total_vertices += dist_daglist.VSizes[i];
+        total_edges += dist_daglist.ESizes[i];
+        total_new_vertices += dist_daglist.InsertV[i].size();
+    }
+    
+    std::cout << "Total Vertices: " << total_vertices << std::endl;
+    std::cout << "Total Edges: " << total_edges << std::endl;
+    std::cout << "New Vertices to Insert: " << total_new_vertices << std::endl;
+    std::cout << "Total Entries: " << (total_vertices + total_edges) << std::endl;
+    std::cout << std::endl;
+    
+    // Print distribution per client
+    std::cout << "Distribution per Client:" << std::endl;
+    for (int i = 0; i < nC; ++i) {
+        std::cout << "  Client " << i << ": " << dist_daglist.VSizes[i] << " vertices, "
+                  << dist_daglist.ESizes[i] << " edges, "
+                  << dist_daglist.InsertV[i].size() << " new vertices" << std::endl;
+    }
+    std::cout << std::endl;
+    
+    // Print sample vertices
+    std::cout << "Sample Existing Vertices (first 10):" << std::endl;
+    std::cout << "  ID | Src | Dst | Data | isV | sigv | sigs | sigd" << std::endl;
+    std::cout << "  " << std::string(70, '-') << std::endl;
+    int count = 0;
+    for (int c = 0; c < nC && count < 10; ++c) {
+        for (size_t i = 0; i < dist_daglist.VSizes[c] && count < 10; ++i) {
+            const auto& v = dist_daglist.VertexLists[c][i];
+            std::cout << "  " << std::setw(2) << count << " | "
+                      << std::setw(3) << v.src << " | "
+                      << std::setw(3) << v.dst << " | "
+                      << std::setw(4) << v.data << " | "
+                      << std::setw(3) << v.isV << " | "
+                      << std::setw(4) << v.sigv << " | "
+                      << std::setw(4) << v.sigs << " | "
+                      << std::setw(4) << v.sigd << std::endl;
+            count++;
+        }
+    }
+    std::cout << std::endl;
+    
+    // Print new vertices to insert
+    std::cout << "New Vertices to Insert (first 10):" << std::endl;
+    std::cout << "  ID | Src | Dst | Data | isV" << std::endl;
+    std::cout << "  " << std::string(40, '-') << std::endl;
+    count = 0;
+    for (int c = 0; c < nC && count < 10; ++c) {
+        for (size_t i = 0; i < dist_daglist.InsertV[c].size() && count < 10; ++i) {
+            const auto& v = dist_daglist.InsertV[c][i];
+            std::cout << "  " << std::setw(2) << count << " | "
+                      << std::setw(3) << v.src << " | "
+                      << std::setw(3) << v.dst << " | "
+                      << std::setw(4) << v.data << " | "
+                      << std::setw(3) << v.isV << std::endl;
+            count++;
+        }
+    }
+    std::cout << std::endl;
+    
+    // Print sample edges
+    std::cout << "Sample Edges (first 10):" << std::endl;
+    std::cout << "  ID | Src | Dst | Data | isV | sigv | sigs | sigd" << std::endl;
+    std::cout << "  " << std::string(70, '-') << std::endl;
+    count = 0;
+    for (int c = 0; c < nC && count < 10; ++c) {
+        for (size_t i = 0; i < dist_daglist.ESizes[c] && count < 10; ++i) {
+            const auto& e = dist_daglist.EdgeLists[c][i];
+            std::cout << "  " << std::setw(2) << count << " | "
+                      << std::setw(3) << e.src << " | "
+                      << std::setw(3) << e.dst << " | "
+                      << std::setw(4) << e.data << " | "
+                      << std::setw(3) << e.isV << " | "
+                      << std::setw(4) << e.sigv << " | "
+                      << std::setw(4) << e.sigs << " | "
+                      << std::setw(4) << e.sigd << std::endl;
+            count++;
+        }
+    }
+    std::cout << std::string(60, '=') << std::endl;
+}
+
+void printOutputs(const std::vector<Ring>& outputs, const DistributedDaglist& dist_daglist) {
+    std::cout << "\n" << std::string(60, '=') << std::endl;
+    std::cout << "OUTPUT: Graph After Vertex Insertion" << std::endl;
+    std::cout << std::string(60, '=') << std::endl;
+    
+    int nC = dist_daglist.num_clients;
+    size_t expected_outputs = 0;
+    for (int c = 0; c < nC; ++c) {
+        expected_outputs += dist_daglist.VSizes[c] * 7; // existing vertices
+        expected_outputs += dist_daglist.InsertV[c].size() * 7; // new vertices
+        expected_outputs += dist_daglist.ESizes[c] * 7; // edges
+    }
+    
+    if (outputs.size() < expected_outputs) {
+        std::cout << "Warning: Received " << outputs.size() << " outputs, expected " << expected_outputs << std::endl;
+        return;
+    }
+    
+    std::cout << "Updated Vertices (up to first 10, including new vertices):" << std::endl;
+    std::cout << "  ID | Src | Dst | isV | Data | sigs | sigv | sigd" << std::endl;
+    std::cout << "  " << std::string(70, '-') << std::endl;
+    
+    size_t output_idx = 0;
+    int display_count = 0;
+    
+    // Display existing vertices, then new vertices for each client
+    for (int c = 0; c < nC && display_count < 10; ++c) {
+        // Existing vertices
+        size_t limit = std::min(static_cast<size_t>(dist_daglist.VSizes[c]), size_t(10 - display_count));
+        for (size_t i = 0; i < limit && output_idx + 6 < outputs.size(); ++i) {
+            std::cout << "  " << std::setw(2) << display_count << " | "
+                      << std::setw(3) << outputs[output_idx + 0] << " | "
+                      << std::setw(3) << outputs[output_idx + 1] << " | "
+                      << std::setw(3) << outputs[output_idx + 2] << " | "
+                      << std::setw(4) << outputs[output_idx + 3] << " | "
+                      << std::setw(4) << outputs[output_idx + 4] << " | "
+                      << std::setw(4) << outputs[output_idx + 5] << " | "
+                      << std::setw(4) << outputs[output_idx + 6] << std::endl;
+            output_idx += 7;
+            display_count++;
+        }
+        output_idx += (dist_daglist.VSizes[c] - limit) * 7;
+        
+        // New vertices
+        if (display_count < 10) {
+            limit = std::min(dist_daglist.InsertV[c].size(), size_t(10 - display_count));
+            for (size_t i = 0; i < limit && output_idx + 6 < outputs.size(); ++i) {
+                std::cout << "  " << std::setw(2) << display_count << " | "
+                          << std::setw(3) << outputs[output_idx + 0] << " | "
+                          << std::setw(3) << outputs[output_idx + 1] << " | "
+                          << std::setw(3) << outputs[output_idx + 2] << " | "
+                          << std::setw(4) << outputs[output_idx + 3] << " | "
+                          << std::setw(4) << outputs[output_idx + 4] << " | "
+                          << std::setw(4) << outputs[output_idx + 5] << " | "
+                          << std::setw(4) << outputs[output_idx + 6] << " *NEW*" << std::endl;
+                output_idx += 7;
+                display_count++;
+            }
+            output_idx += (dist_daglist.InsertV[c].size() - limit) * 7;
+        } else {
+            output_idx += dist_daglist.InsertV[c].size() * 7;
+        }
+        
+        // Skip edges for this client
+        output_idx += dist_daglist.ESizes[c] * 7;
+    }
+    
+    std::cout << "\nUpdated Edges (up to first 10):" << std::endl;
+    std::cout << "  ID | Src | Dst | isV | Data | sigs | sigv | sigd" << std::endl;
+    std::cout << "  " << std::string(70, '-') << std::endl;
+    
+    // Reset to start of outputs and iterate through clients for edges
+    output_idx = 0;
+    display_count = 0;
+    for (int c = 0; c < nC && display_count < 10; ++c) {
+        // Skip vertices (existing + new) for this client
+        output_idx += dist_daglist.VSizes[c] * 7;
+        output_idx += dist_daglist.InsertV[c].size() * 7;
+        
+        // Now print edges
+        size_t limit = std::min(static_cast<size_t>(dist_daglist.ESizes[c]), size_t(10 - display_count));
+        for (size_t i = 0; i < limit && output_idx + 6 < outputs.size(); ++i) {
+            std::cout << "  " << std::setw(2) << display_count << " | "
+                      << std::setw(3) << outputs[output_idx + 0] << " | "
+                      << std::setw(3) << outputs[output_idx + 1] << " | "
+                      << std::setw(3) << outputs[output_idx + 2] << " | "
+                      << std::setw(4) << outputs[output_idx + 3] << " | "
+                      << std::setw(4) << outputs[output_idx + 4] << " | "
+                      << std::setw(4) << outputs[output_idx + 5] << " | "
+                      << std::setw(4) << outputs[output_idx + 6] << std::endl;
+            output_idx += 7;
+            display_count++;
+        }
+        output_idx += (dist_daglist.ESizes[c] - limit) * 7;
+    }
+    
+    std::cout << std::string(60, '=') << std::endl;
+}
 
 common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist dist_daglist) {
 
@@ -254,13 +445,13 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
     }
 
     // Propagate
-    auto prop_delta = addSubCircPropagate(circ, sigd, delta_wires, nV, permutation, true);
+    auto prop_delta = circ.addSubCircPropagate(sigd, delta_wires, nV, permutation, true);
 
     // Reorder sigv to destination order
-    auto sigv_d = addSubCircPermList(circ, sigd, {sigv}, permutation)[0];
+    auto sigv_d = circ.addSubCircPermList(sigd, {sigv}, permutation)[0];
 
     // Reorder back to vertex order
-    auto delta_v = addSubCircPermList(circ, sigv, {prop_delta}, permutation)[0];
+    auto delta_v = circ.addSubCircPermList(sigv, {prop_delta}, permutation)[0];
 
     // Update sigd; vector includes dummy values for first nV entries (corresponding to vertices)
     std::vector<wire_t> updated_edge_sigd_values(vec_size);
@@ -492,7 +683,7 @@ void benchmark(const bpo::variables_map& opts) {
             }
         }
         
-                // Map collected values into circuit input wires (in order)
+        // Map collected values into circuit input wires (in order)
         size_t wire_idx = 0;
         for (size_t i = 0; i < all_input_values.size() && wire_idx < input_wires.size(); ++i) {
             inputs[input_wires[wire_idx++]] = all_input_values[i];
@@ -500,13 +691,7 @@ void benchmark(const bpo::variables_map& opts) {
         
         // Store for verification
         graph_input_values = all_input_values;
-        
-        std::cout << "\n=== DEBUG: First 20 inputs being set ===" << std::endl;
-        size_t debug_count = std::min(size_t(100), all_input_values.size());
-        for (size_t i = 0; i < debug_count; ++i) {
-            std::cout << "Input[" << i << "] = " << all_input_values[i] << std::endl;
-        }
-        std::cout << "===================================\n" << std::endl;
+    
     }
 
     std::cout << "Total inputs set by party " << pid << ": " << inputs.size() << std::endl;
@@ -524,8 +709,9 @@ void benchmark(const bpo::variables_map& opts) {
     StatsPoint online_start(*network);
     for (size_t i = 0; i < circ.gates_by_level.size(); ++i) {
         eval.evaluateGatesAtDepth(i);
+        network->sync();
+        network->flush();
     }
-    network->flush();
     network->sync();
     StatsPoint online_end(*network);
     std::cout << "Online evaluation complete" << std::endl;
@@ -536,22 +722,15 @@ void benchmark(const bpo::variables_map& opts) {
     network->sync();
     std::cout << "Number of outputs: " << outputs.size() << std::endl;
     
-
-
-    if (outputs.size() > 0) {
-        std::cout << "\n=== DEBUG: Party " << pid << " outputs ===" << std::endl;
-        std::cout << "Total outputs: " << outputs.size() << std::endl;
-        
-        if (pid == 1 && outputs.size() > 0) {
-        std::cout << "\n=== DEBUG: First 20 raw outputs ===" << std::endl;
-        for (size_t i = 0; i < std::min(size_t(100), outputs.size()); ++i) {
-            std::cout << "Output[" << i << "] = " << outputs[i] << std::endl;
-        }
-        std::cout << "===================================\n" << std::endl;
-        }
-        std::cout << "===================================\n" << std::endl;
+    // Print formatted inputs
+    if (pid == 1) {
+        printDaglistInfo(dist_daglist, "INPUT: Graph Before Vertex Insertion");
     }
-
+    
+    // Print formatted outputs
+    if (pid == 1 && outputs.size() > 0) {
+        printOutputs(outputs, dist_daglist);
+    }
 
     StatsPoint end(*network);
 

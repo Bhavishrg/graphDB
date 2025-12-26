@@ -28,8 +28,8 @@ FIn1Gate::FIn1Gate(GateType type, wire_t in, wire_t out)
 SIMDGate::SIMDGate(GateType type, std::vector<wire_t> in1, std::vector<wire_t> in2, wire_t out)
     : Gate(type, out), in1(std::move(in1)), in2(std::move(in2)) {}
 
-SIMDOGate::SIMDOGate(GateType type, int owner, std::vector<wire_t> in, std::vector<wire_t> outs, std::vector<std::vector<int>> permutation, size_t vec_size)
-    : Gate(type, owner, outs[0], outs), in(std::move(in)), permutation(std::move(permutation)), vec_size(vec_size) {}
+SIMDOGate::SIMDOGate(GateType type, int owner, std::vector<wire_t> in, std::vector<wire_t> outs, std::vector<std::vector<int>> permutation, size_t vec_size, int inv)
+    : Gate(type, owner, outs[0], outs), in(std::move(in)), permutation(std::move(permutation)), vec_size(vec_size), inv(inv) {}
 
 SIMDMOGate::SIMDMOGate(GateType type, int owner, std::vector<wire_t> in, std::vector<std::vector<wire_t>> multi_outs,
                        std::vector<std::vector<int>> permutation)
@@ -80,19 +80,8 @@ std::ostream& operator<<(std::ostream& os, GateType type) {
       os << "Public Permutation";
       break;
 
-    case kCompact:
-      os << "Compact";
-      break;
     case kDeleteWires:
       os << "Delete Wires";
-      break;
-
-    case kGroupwiseIndex:
-      os << "Group-wise Index";
-      break;
-
-    case kGroupwisePropagate:
-      os << "Group-wise Propagate";
       break;
 
     case kSort:

@@ -48,7 +48,7 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size, s
     std::generate(data_values.begin(), data_values.end(), [&]() { return circ.newInputWire(); });
 
     // Use utility function to add gather sub-circuit
-    auto data_values_diff = addSubCircGather(circ, position_map_shares, data_values, num_groups, permutation);
+    auto data_values_diff = circ.addSubCircGather(position_map_shares, data_values, num_groups, permutation);
 
     // Set outputs
     for (size_t i = 0; i < vec_size; ++i) {

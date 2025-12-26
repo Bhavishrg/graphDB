@@ -42,6 +42,23 @@ void OfflineEvaluator::randomShare(int nP, int pid, RandGenPool& rgen, AddShare<
   }
 }
 
+void OfflineEvaluator::randomShare(int nP, int pid, RandGenPool& rgen, AddShare<Ring>& share) {
+  Ring val = Ring(0);
+  Ring sec = Ring(0);
+  if (pid == 0) {
+    share.pushValue(Ring(0));
+    // tpShare.pushValues(Ring(0));
+    for (int i = 1; i <= nP; i++) {
+      rgen.pi(i).random_data(&val, sizeof(Ring));
+      sec = sec + val; 
+    }
+    share.pushValue(sec);
+  } else {
+    rgen.p0().random_data(&val, sizeof(Ring));
+    share.pushValue(val);
+  }
+}
+
 void OfflineEvaluator::randomShareSecret(int nP, int pid, RandGenPool& rgen,
                                          AddShare<Ring>& share, TPShare<Ring>& tpShare, Ring secret,
                                          std::vector<Ring>& rand_sh_sec, size_t& idx_rand_sh_sec) {
@@ -57,6 +74,31 @@ void OfflineEvaluator::randomShareSecret(int nP, int pid, RandGenPool& rgen,
     }
     valn = secret - valn;
     tpShare.pushValues(valn);
+    rand_sh_sec.push_back(valn);
+  } else {
+    if (pid != nP) {
+      Ring val;
+      rgen.p0().random_data(&val, sizeof(Ring));
+      share.pushValue(val);
+    } else {
+      share.pushValue(rand_sh_sec[idx_rand_sh_sec]);
+      idx_rand_sh_sec++;
+    }
+  }
+}
+
+void OfflineEvaluator::randomShareSecret(int nP, int pid, RandGenPool& rgen,
+                                         AddShare<Ring>& share, Ring secret,
+                                         std::vector<Ring>& rand_sh_sec, size_t& idx_rand_sh_sec) {
+  if (pid == 0) {
+    Ring val = Ring(0);
+    Ring valn = Ring(0);
+    share.pushValue(secret);
+    for (int i = 1; i < nP; i++) {
+      rgen.pi(i).random_data(&val, sizeof(Ring));
+      valn += val;
+    }
+    valn = secret - valn;
     rand_sh_sec.push_back(valn);
   } else {
     if (pid != nP) {
@@ -159,35 +201,66 @@ void OfflineEvaluator::generateShuffleDeltaVector(int nP, int pid, RandGenPool& 
   
 }
 
-void OfflineEvaluator::generatePermAndShDeltaVector(int nP, int pid, RandGenPool& rgen, int owner, std::vector<AddShare<Ring>>& delta,
-                                                    std::vector<TPShare<Ring>>& tp_a, std::vector<TPShare<Ring>>& tp_b,
-                                                    std::vector<int>& pi, size_t& vec_size, std::vector<Ring>& delta_sh, size_t& idx_delta_sh) {
+void OfflineEvaluator::generateShuffleCorrelation(int nP, int pid, RandGenPool& rgen, std::vector<AddShare<Ring>>& r_1,
+                                                 std::vector<AddShare<Ring>>& r_2, std::vector<Ring>& delta_r, std::vector<std::vector<int>>& tp_pi_all,
+                                                  size_t& vec_size, std::vector<std::vector<Ring>>& shuffle_delta_sh, std::vector<size_t>& idx_shuffle_delta_sh) {
   if (pid == 0) {
-    std::vector<Ring> deltan(vec_size);
+    // Helper party (pid=0) generates intermediate random vectors and computes delta values
+    // R[0] = r_1 (secret from shares)
+    // R[i] = random vectors for i=1 to nP-1
+    // R[nP] = r_2 (secret from shares)
+    // delta_r for party i = tp_pi_all[i-1](R[i-1]) - R[i]
+    
+    // Initialize R with nP+1 vectors
+    std::vector<std::vector<Ring>> R(nP + 1, std::vector<Ring>(vec_size));
+    
+    // R[0] = r_1 secret values
     for (int i = 0; i < vec_size; ++i) {
-      Ring val_a = tp_a[i].secret() - tp_a[i][owner];
-      int idx_perm = pi[i];
-      Ring val_b = tp_b[idx_perm].secret() - tp_b[idx_perm][owner];
-      deltan[idx_perm] = val_a - val_b;
+      R[0][i] = r_1[i].valueAt();
     }
-    for (int i = 0; i < vec_size; ++i) {
-      delta_sh.push_back(deltan[i]);
+    
+    // Generate random intermediate vectors R[1] to R[nP-1]
+    for (int j = 1; j < nP; ++j) {
+      for (int i = 0; i < vec_size; ++i) {
+        rgen.self().random_data(&R[j][i], sizeof(Ring));
+      }
     }
-  } else if (pid == owner) {
+    
+    // R[nP] = r_2 secret values
     for (int i = 0; i < vec_size; ++i) {
-      delta[i].pushValue(delta_sh[idx_delta_sh]);
-      idx_delta_sh++;
+      R[nP][i] = r_2[i].valueAt();
+    }
+    
+    // Compute delta_r for each computing party (pid 1 to nP)
+    // delta for party i (1-indexed) = tp_pi_all[i-1](R[i-1]) - R[i]
+    // Online protocol: party p receives z[j], outputs z[pi[i]] + delta_r[i]
+    // We want: (x[pi[i]] + R[p-1][pi[i]]) + delta = x[pi[i]] + R[p][i]
+    // So delta = R[p][i] - R[p-1][pi[i]]
+    for (int party_idx = 0; party_idx < nP; ++party_idx) {
+      for (int i = 0; i < vec_size; ++i) {
+        int idx_perm = tp_pi_all[party_idx][i];
+        // For all parties: delta = R[party_idx+1][i] - R[party_idx][pi[i]]
+        Ring delta = R[party_idx + 1][i] - R[party_idx][idx_perm];
+        shuffle_delta_sh[party_idx].push_back(delta);
+      }
+    }
+
+  } else {
+    // Computing parties (pid 1 to nP) receive delta_r from shuffle_delta_sh
+    for (int i = 0; i < vec_size; ++i) {
+      delta_r[i] = shuffle_delta_sh[pid-1][idx_shuffle_delta_sh[pid-1]];
+      idx_shuffle_delta_sh[pid-1]++;
     }
   }
 }
 
 
+
 void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils::wire_t, int>& input_pid_map, 
                                          std::vector<Ring>& rand_sh_sec,
-                                         std::vector<std::vector<Ring>>& delta_sh) {
+                                         std::vector<std::vector<Ring>>& shuffle_delta_sh) {
   size_t idx_rand_sh_sec = 0;
-  size_t idx_delta_sh = 0;
-  size_t b_idx_rand_sh_sec = 0;
+  std::vector<size_t> idx_shuffle_delta_sh(nP_, 0);
 
   for (const auto& level : circ_.gates_by_level) {
     for (const auto& gate : level) {
@@ -211,90 +284,81 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
 
         case common::utils::GateType::kMul: {
           AddShare<Ring> triple_a; // Holds one beaver triple share of a random value a
-          TPShare<Ring> tp_triple_a; // Holds all the beaver triple shares of a random value a
           AddShare<Ring> triple_b; // Holds one beaver triple share of a random value b
-          TPShare<Ring> tp_triple_b; // Holds all the beaver triple shares of a random value b
           AddShare<Ring> triple_c; // Holds one beaver triple share of c=a*b
-          TPShare<Ring> tp_triple_c; // Holds all the beaver triple shares of c=a*b
-          randomShare(nP_, id_, rgen_, triple_a, tp_triple_a);
-          randomShare(nP_, id_, rgen_, triple_b, tp_triple_b);
+          // TPShare<Ring> tp_triple_c; // Holds all the beaver triple shares of c=a*b
+          randomShare(nP_, id_, rgen_, triple_a);
+          randomShare(nP_, id_, rgen_, triple_b);
           Ring tp_prod;
-          if (id_ == 0) { tp_prod = tp_triple_a.secret() * tp_triple_b.secret(); }
-          randomShareSecret(nP_, id_, rgen_, triple_c, tp_triple_c, tp_prod, rand_sh_sec, idx_rand_sh_sec);
+          if (id_ == 0) { tp_prod = triple_a.valueAt() * triple_b.valueAt(); }
+          randomShareSecret(nP_, id_, rgen_, triple_c, tp_prod, rand_sh_sec, idx_rand_sh_sec);
           preproc_.gates[gate->out] =
-              std::move(std::make_unique<PreprocMultGate<Ring>>(triple_a, tp_triple_a, triple_b, tp_triple_b, triple_c, tp_triple_c));
+              std::move(std::make_unique<PreprocMultGate<Ring>>(triple_a, triple_b, triple_c));
           break;
         }
 
          case common::utils::GateType::kEqz: {
           AddShare<Ring> share_r1;
-          TPShare<Ring> tp_share_r1;
           AddShare<Ring> share_r2;
-          TPShare<Ring> tp_share_r2;
           std::vector<AddShare<Ring>> share_r1_bits(RINGSIZEBITS);
-          std::vector<TPShare<Ring>> tp_share_r1_bits(RINGSIZEBITS);
           std::vector<AddShare<Ring>> share_r2_bits(RINGSIZEBITS);
-          std::vector<TPShare<Ring>> tp_share_r2_bits(RINGSIZEBITS);
-          Ring tp_r1 = Ring(0);
-          Ring tp_r2 = Ring(0);
-          std::vector<Ring> tp_r1_bits(RINGSIZEBITS);
-          std::vector<Ring> tp_r2_bits(RINGSIZEBITS);
+          Ring r1 = Ring(0);
+          Ring r2 = Ring(0);
+          std::vector<Ring> r1_bits(RINGSIZEBITS);
+          std::vector<Ring> r2_bits(RINGSIZEBITS);
 
           // sharing r1 and r1_bits
-          randomShare(nP_, id_, rgen_, share_r1, tp_share_r1);
+          randomShare(nP_, id_, rgen_, share_r1);
           
           if (id_ == 0) {
-            tp_r1 = tp_share_r1.secret();
-            tp_r1_bits = bitDecomposeToInt(tp_r1);
+            r1 = share_r1.valueAt();
+            r1_bits = bitDecomposeToInt(r1);
           }
           for (int i = 0; i < RINGSIZEBITS; ++i) {
-              randomShareSecret(nP_, id_, rgen_, share_r1_bits[i], tp_share_r1_bits[i], tp_r1_bits[i],
+              randomShareSecret(nP_, id_, rgen_, share_r1_bits[i], r1_bits[i],
                                                     rand_sh_sec, idx_rand_sh_sec);                                      
           }
 
           // sharing r2 and r2_bits
           if (id_ == 0) {
-            rgen_.p0().random_data(&tp_r2, sizeof(Ring));
-            tp_r2 = tp_r2 % RINGSIZEBITS; // make sure r2 is in [0, RINGSIZEBITS-1]
+            rgen_.p0().random_data(&r2, sizeof(Ring));
+            r2 = r2 % RINGSIZEBITS; // make sure r2 is in [0, RINGSIZEBITS-1]
           }
-          randomShareSecret(nP_, id_, rgen_, share_r2, tp_share_r2, tp_r2, rand_sh_sec, idx_rand_sh_sec);
+          randomShareSecret(nP_, id_, rgen_, share_r2, r2, rand_sh_sec, idx_rand_sh_sec);
 
           if (id_ == 0) {
-            tp_r2 = tp_share_r2.secret();
+            r2 = share_r2.valueAt();
             for (int i = 0; i < RINGSIZEBITS; ++i) {
-              if (i == tp_r2 % RINGSIZEBITS) {
-                tp_r2_bits[i] = 1;
+              if (i == r2 % RINGSIZEBITS) {
+                r2_bits[i] = 1;
               } else {
-                tp_r2_bits[i] = 0;
+                r2_bits[i] = 0;
               }
             }
           }
 
           for (int i = 0; i < RINGSIZEBITS; ++i) {
-            randomShareSecret(nP_, id_, rgen_, share_r2_bits[i], tp_share_r2_bits[i], tp_r2_bits[i],
+            randomShareSecret(nP_, id_, rgen_, share_r2_bits[i], r2_bits[i],
                                                     rand_sh_sec, idx_rand_sh_sec);
           }
           preproc_.gates[gate->out] =
-              std::make_unique<PreprocEqzGate<Ring>>(share_r1, tp_share_r1, share_r2, tp_share_r2, share_r1_bits, tp_share_r1_bits, share_r2_bits, tp_share_r2_bits);
+              std::make_unique<PreprocEqzGate<Ring>>(share_r1, share_r2, share_r1_bits, share_r2_bits);
           break;
         }
 
         case common::utils::GateType::kShuffle: {
           auto *shuffle_g = static_cast<common::utils::SIMDOGate *>(gate.get());
           auto vec_size = shuffle_g->in.size();
-          std::vector<AddShare<Ring>> a(vec_size); // Randomly sampled vector
-          std::vector<TPShare<Ring>> tp_a(vec_size); // Randomly sampled vector
-          std::vector<AddShare<Ring>> b(vec_size); // Randomly sampled vector
-          std::vector<TPShare<Ring>> tp_b(vec_size); // Randomly sampled vector
-          std::vector<AddShare<Ring>> c(vec_size); // Randomly sampled vector
-          std::vector<TPShare<Ring>> tp_c(vec_size); // Randomly sampled vector
+
+          std::vector<AddShare<Ring>> r_1(vec_size); // Randomly sampled vector for masking input
+          std::vector<AddShare<Ring>> r_2(vec_size); // Randomly sampled vector for setting outputs
+          std::vector<Ring> delta_r(vec_size); // delta_r[i] = pi_i(r[i]) - r[i+1]
           for (int i = 0; i < vec_size; i++) {
-            randomShare(nP_, id_, rgen_, a[i], tp_a[i]);
-            randomShare(nP_, id_, rgen_, b[i], tp_b[i]);
-            randomShare(nP_, id_, rgen_, c[i], tp_c[i]);
+              randomShare(nP_, id_, rgen_, r_1[i]);
+              randomShare(nP_, id_, rgen_, r_2[i]);
           }
 
-          std::vector<int> pi; // Randomly sampled permutation using HP
+          std::vector<int> pi; // Randomly sampled permutation of parties
           std::vector<std::vector<int>> tp_pi_all; // Randomly sampled permutations of all parties using HP
           if (id_ != 0) {
             pi = std::move(shuffle_g->permutation[0]);
@@ -302,457 +366,10 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
             tp_pi_all = std::move(shuffle_g->permutation);
           }
 
-          std::vector<Ring> delta(vec_size); // Delta vector only held by the last party. Dummy values for the other parties
-          generateShuffleDeltaVector(nP_, id_, rgen_, delta, tp_a, tp_b, tp_c, tp_pi_all, vec_size, rand_sh_sec, idx_rand_sh_sec);
+          generateShuffleCorrelation(nP_, id_, rgen_, r_1, r_2, delta_r, tp_pi_all, vec_size, shuffle_delta_sh, idx_shuffle_delta_sh);
+
           preproc_.gates[gate->out] =
-              std::move(std::make_unique<PreprocShuffleGate<Ring>>(a, tp_a, b, tp_b, c, tp_c, delta, pi, tp_pi_all));
-          break;
-        }
-
-        case common::utils::GateType::kPermAndSh: {
-          auto *permAndSh_g = static_cast<common::utils::SIMDOGate *>(gate.get());
-          auto vec_size = permAndSh_g->in.size();
-          std::vector<AddShare<Ring>> a(vec_size); // Randomly sampled vector
-          std::vector<TPShare<Ring>> tp_a(vec_size); // Randomly sampled vector
-          std::vector<AddShare<Ring>> b(vec_size); // Randomly sampled vector
-          std::vector<TPShare<Ring>> tp_b(vec_size); // Randomly sampled vector
-          for (int i = 0; i < vec_size; i++) {
-            randomShare(nP_, id_, rgen_, a[i], tp_a[i]);
-            randomShare(nP_, id_, rgen_, b[i], tp_b[i]);
-          }
-
-          std::vector<int> pi; // Randomly sampled permutation using HP
-          std::vector<std::vector<int>> tp_pi_all; // Randomly sampled permutation of gate owner party using HP.
-          if (id_ != 0) {
-            pi = std::move(permAndSh_g->permutation[0]);
-          } else {
-            tp_pi_all = std::move(permAndSh_g->permutation);
-          }
-
-          std::vector<int> pi_common(vec_size); // Common random permutation held by all parties except HP. HP holds dummy values
-          if (id_ != 0) { randomPermutation(nP_, id_, rgen_, pi_common, vec_size); }
-
-          std::vector<AddShare<Ring>> delta(vec_size); // Delta vector only held by the gate owner party. Dummy values for the other parties
-          generatePermAndShDeltaVector(nP_, id_, rgen_, gate->owner, delta, tp_a, tp_b,
-                                       tp_pi_all[gate->owner - 1], vec_size, delta_sh[gate->owner - 1], idx_delta_sh);
-          preproc_.gates[gate->out] =
-              std::move(std::make_unique<PreprocPermAndShGate<Ring>>(a, tp_a, b, tp_b, delta, pi, tp_pi_all, pi_common));
-          break;
-        }
-
-        case common::utils::GateType::kCompact: {
-          // Compact gate preprocessing: shuffle + multiplications
-          auto *compact_g = static_cast<common::utils::SIMDOGate *>(gate.get());
-          // Input is [t0,...,tn, p1_0,...,p1_n, p2_0,...,p2_n, ...]
-          // Output is [t_compact0,...,t_compactn, p1_compact0,...,p1_compactn, p2_compact0,...,p2_compactn, ...]
-          auto total_size = compact_g->in.size();
-          auto output_size = compact_g->outs.size();
-          // vec_size * (1 + num_payloads) = total_size
-          // Determine vec_size from permutation size (which is always vec_size)
-          auto vec_size = compact_g->permutation[0].size();
-          
-          // Preprocessing for 3 shuffle operations (p, t, label) - we'll use same shuffle data for all 3
-          std::vector<AddShare<Ring>> shuffle_a(vec_size);
-          std::vector<TPShare<Ring>> shuffle_tp_a(vec_size);
-          std::vector<AddShare<Ring>> shuffle_b(vec_size);
-          std::vector<TPShare<Ring>> shuffle_tp_b(vec_size);
-          std::vector<AddShare<Ring>> shuffle_c(vec_size);
-          std::vector<TPShare<Ring>> shuffle_tp_c(vec_size);
-          
-          for (int i = 0; i < vec_size; i++) {
-            randomShare(nP_, id_, rgen_, shuffle_a[i], shuffle_tp_a[i]);
-            randomShare(nP_, id_, rgen_, shuffle_b[i], shuffle_tp_b[i]);
-            randomShare(nP_, id_, rgen_, shuffle_c[i], shuffle_tp_c[i]);
-          }
-          
-          std::vector<int> shuffle_pi;
-          std::vector<std::vector<int>> shuffle_tp_pi_all;
-          if (id_ != 0) {
-            shuffle_pi = std::move(compact_g->permutation[0]);
-          } else {
-            shuffle_tp_pi_all = std::move(compact_g->permutation);
-          }
-          
-          std::vector<Ring> shuffle_delta(vec_size);
-          generateShuffleDeltaVector(nP_, id_, rgen_, shuffle_delta, shuffle_tp_a, shuffle_tp_b, shuffle_tp_c,
-                                    shuffle_tp_pi_all, vec_size, rand_sh_sec, idx_rand_sh_sec);
-          
-          // Preprocessing for vec_size multiplications (for label computation)
-          std::vector<AddShare<Ring>> mult_triple_a(vec_size);
-          std::vector<TPShare<Ring>> mult_tp_triple_a(vec_size);
-          std::vector<AddShare<Ring>> mult_triple_b(vec_size);
-          std::vector<TPShare<Ring>> mult_tp_triple_b(vec_size);
-          std::vector<AddShare<Ring>> mult_triple_c(vec_size);
-          std::vector<TPShare<Ring>> mult_tp_triple_c(vec_size);
-          
-          for (int i = 0; i < vec_size; i++) {
-            randomShare(nP_, id_, rgen_, mult_triple_a[i], mult_tp_triple_a[i]);
-            randomShare(nP_, id_, rgen_, mult_triple_b[i], mult_tp_triple_b[i]);
-            Ring tp_prod;
-            if (id_ == 0) { tp_prod = mult_tp_triple_a[i].secret() * mult_tp_triple_b[i].secret(); }
-            randomShareSecret(nP_, id_, rgen_, mult_triple_c[i], mult_tp_triple_c[i], tp_prod, rand_sh_sec, idx_rand_sh_sec);
-          }
-          
-          preproc_.gates[gate->out] = std::move(std::make_unique<PreprocCompactGate<Ring>>(
-              shuffle_a, shuffle_tp_a, shuffle_b, shuffle_tp_b, shuffle_c, shuffle_tp_c,
-              shuffle_delta, shuffle_pi, shuffle_tp_pi_all,
-              mult_triple_a, mult_tp_triple_a, mult_triple_b, mult_tp_triple_b,
-              mult_triple_c, mult_tp_triple_c));
-          break;
-        }
-
-        case common::utils::GateType::kGroupwiseIndex: {
-          // Group-wise Index gate preprocessing
-          auto *gi_g = static_cast<common::utils::SIMDOGate *>(gate.get());
-          // Input is [key0,...,keyn, v0,...,vn]
-          // Output is [ind0,...,indn, key0,...,keyn, v0,...,vn]
-          auto vec_size = gi_g->in.size() / 2;
-          
-          // We need preprocessing for:
-          // 1. First compaction shuffle (delta and permutation only)
-          // 2. Multiplications for label computation in first compaction
-          // 3. Multiplications (key_c * key_compacted)
-          // 4. Reverse compaction shuffle (delta and permutation only)
-          
-          // First compaction shuffle preprocessing
-          std::vector<AddShare<Ring>> shuffle_a(vec_size);
-          std::vector<TPShare<Ring>> shuffle_tp_a(vec_size);
-          std::vector<AddShare<Ring>> shuffle_b(vec_size);
-          std::vector<TPShare<Ring>> shuffle_tp_b(vec_size);
-          std::vector<AddShare<Ring>> shuffle_c(vec_size);
-          std::vector<TPShare<Ring>> shuffle_tp_c(vec_size);
-          
-          for (int i = 0; i < vec_size; i++) {
-            randomShare(nP_, id_, rgen_, shuffle_a[i], shuffle_tp_a[i]);
-            randomShare(nP_, id_, rgen_, shuffle_b[i], shuffle_tp_b[i]);
-            randomShare(nP_, id_, rgen_, shuffle_c[i], shuffle_tp_c[i]);
-          }
-          
-          std::vector<int> shuffle_pi;
-          std::vector<std::vector<int>> shuffle_tp_pi_all;
-          if (id_ != 0) {
-            shuffle_pi = std::move(gi_g->permutation[0]);
-          } else {
-            shuffle_tp_pi_all = std::move(gi_g->permutation);
-          }
-          
-          std::vector<Ring> shuffle_delta(vec_size);
-          generateShuffleDeltaVector(nP_, id_, rgen_, shuffle_delta, shuffle_tp_a, 
-                                    shuffle_tp_b, shuffle_tp_c,
-                                    shuffle_tp_pi_all, vec_size, rand_sh_sec, idx_rand_sh_sec);
-          
-          // Multiplication triples for label computation in first compaction
-          std::vector<AddShare<Ring>> mult_triple_a(vec_size);
-          std::vector<TPShare<Ring>> mult_tp_triple_a(vec_size);
-          std::vector<AddShare<Ring>> mult_triple_b(vec_size);
-          std::vector<TPShare<Ring>> mult_tp_triple_b(vec_size);
-          std::vector<AddShare<Ring>> mult_triple_c(vec_size);
-          std::vector<TPShare<Ring>> mult_tp_triple_c(vec_size);
-          
-          for (int i = 0; i < vec_size; i++) {
-            randomShare(nP_, id_, rgen_, mult_triple_a[i], mult_tp_triple_a[i]);
-            randomShare(nP_, id_, rgen_, mult_triple_b[i], mult_tp_triple_b[i]);
-            Ring tp_prod;
-            if (id_ == 0) { tp_prod = mult_tp_triple_a[i].secret() * mult_tp_triple_b[i].secret(); }
-            randomShareSecret(nP_, id_, rgen_, mult_triple_c[i], mult_tp_triple_c[i], tp_prod, rand_sh_sec, idx_rand_sh_sec);
-          }
-          
-          // Multiplication triples for key_c * key_compacted
-          std::vector<AddShare<Ring>> keymult_triple_a(vec_size);
-          std::vector<TPShare<Ring>> keymult_tp_triple_a(vec_size);
-          std::vector<AddShare<Ring>> keymult_triple_b(vec_size);
-          std::vector<TPShare<Ring>> keymult_tp_triple_b(vec_size);
-          std::vector<AddShare<Ring>> keymult_triple_c(vec_size);
-          std::vector<TPShare<Ring>> keymult_tp_triple_c(vec_size);
-          
-          for (int i = 0; i < vec_size; i++) {
-            randomShare(nP_, id_, rgen_, keymult_triple_a[i], keymult_tp_triple_a[i]);
-            randomShare(nP_, id_, rgen_, keymult_triple_b[i], keymult_tp_triple_b[i]);
-            Ring tp_prod;
-            if (id_ == 0) { tp_prod = keymult_tp_triple_a[i].secret() * keymult_tp_triple_b[i].secret(); }
-            randomShareSecret(nP_, id_, rgen_, keymult_triple_c[i], keymult_tp_triple_c[i], tp_prod, rand_sh_sec, idx_rand_sh_sec);
-          }
-          
-          // Reverse compaction shuffle preprocessing
-          std::vector<AddShare<Ring>> revcompact_shuffle_a(vec_size);
-          std::vector<TPShare<Ring>> revcompact_shuffle_tp_a(vec_size);
-          std::vector<AddShare<Ring>> revcompact_shuffle_b(vec_size);
-          std::vector<TPShare<Ring>> revcompact_shuffle_tp_b(vec_size);
-          std::vector<AddShare<Ring>> revcompact_shuffle_c(vec_size);
-          std::vector<TPShare<Ring>> revcompact_shuffle_tp_c(vec_size);
-          
-          for (int i = 0; i < vec_size; i++) {
-            randomShare(nP_, id_, rgen_, revcompact_shuffle_a[i], revcompact_shuffle_tp_a[i]);
-            randomShare(nP_, id_, rgen_, revcompact_shuffle_b[i], revcompact_shuffle_tp_b[i]);
-            randomShare(nP_, id_, rgen_, revcompact_shuffle_c[i], revcompact_shuffle_tp_c[i]);
-          }
-          
-          std::vector<int> revcompact_shuffle_pi = shuffle_pi;  // Reuse same permutation
-          std::vector<std::vector<int>> revcompact_shuffle_tp_pi_all = shuffle_tp_pi_all;
-          
-          std::vector<Ring> revcompact_shuffle_delta(vec_size);
-          generateShuffleDeltaVector(nP_, id_, rgen_, revcompact_shuffle_delta, revcompact_shuffle_tp_a, 
-                                    revcompact_shuffle_tp_b, revcompact_shuffle_tp_c,
-                                    revcompact_shuffle_tp_pi_all, vec_size, rand_sh_sec, idx_rand_sh_sec);
-          
-          auto preproc_gi = std::make_unique<PreprocGroupwiseIndexGate<Ring>>();
-          preproc_gi->shuffle_a = std::move(shuffle_a);
-          preproc_gi->shuffle_tp_a = std::move(shuffle_tp_a);
-          preproc_gi->shuffle_b = std::move(shuffle_b);
-          preproc_gi->shuffle_tp_b = std::move(shuffle_tp_b);
-          preproc_gi->shuffle_c = std::move(shuffle_c);
-          preproc_gi->shuffle_tp_c = std::move(shuffle_tp_c);
-          preproc_gi->shuffle_delta = std::move(shuffle_delta);
-          preproc_gi->shuffle_pi = std::move(shuffle_pi);
-          preproc_gi->shuffle_tp_pi_all = std::move(shuffle_tp_pi_all);
-          preproc_gi->mult_triple_a = std::move(mult_triple_a);
-          preproc_gi->mult_tp_triple_a = std::move(mult_tp_triple_a);
-          preproc_gi->mult_triple_b = std::move(mult_triple_b);
-          preproc_gi->mult_tp_triple_b = std::move(mult_tp_triple_b);
-          preproc_gi->mult_triple_c = std::move(mult_triple_c);
-          preproc_gi->mult_tp_triple_c = std::move(mult_tp_triple_c);
-          
-          preproc_gi->keymult_triple_a = std::move(keymult_triple_a);
-          preproc_gi->keymult_tp_triple_a = std::move(keymult_tp_triple_a);
-          preproc_gi->keymult_triple_b = std::move(keymult_triple_b);
-          preproc_gi->keymult_tp_triple_b = std::move(keymult_tp_triple_b);
-          preproc_gi->keymult_triple_c = std::move(keymult_triple_c);
-          preproc_gi->keymult_tp_triple_c = std::move(keymult_tp_triple_c);
-          
-          preproc_gi->revcompact_shuffle_a = std::move(revcompact_shuffle_a);
-          preproc_gi->revcompact_shuffle_tp_a = std::move(revcompact_shuffle_tp_a);
-          preproc_gi->revcompact_shuffle_b = std::move(revcompact_shuffle_b);
-          preproc_gi->revcompact_shuffle_tp_b = std::move(revcompact_shuffle_tp_b);
-          preproc_gi->revcompact_shuffle_c = std::move(revcompact_shuffle_c);
-          preproc_gi->revcompact_shuffle_tp_c = std::move(revcompact_shuffle_tp_c);
-          preproc_gi->revcompact_shuffle_delta = std::move(revcompact_shuffle_delta);
-          preproc_gi->revcompact_shuffle_pi = std::move(revcompact_shuffle_pi);
-          preproc_gi->revcompact_shuffle_tp_pi_all = std::move(revcompact_shuffle_tp_pi_all);
-          
-          preproc_.gates[gate->out] = std::move(preproc_gi);
-          break;
-        }
-
-        case common::utils::GateType::kGroupwisePropagate: {
-          // Group-wise Propagate gate preprocessing
-          auto *gp_g = static_cast<common::utils::SIMDOGate *>(gate.get());
-          // Input is [key1_0,...,key1_n1, v1_0,...,v1_n1, key2_0,...,key2_n2]
-          // Output is [key2_0,...,key2_n2, v_out_0,...,v_out_n2]
-          
-          // The gate stores two sets of permutations in gp_g->permutation
-          // For party 0: permutation[0] contains all parties' T1 permutations
-          //              permutation[1] contains all parties' T2 permutations
-          // For party i: permutation[0] contains party i's T1 permutation
-          //              permutation[1] contains party i's T2 permutation
-          
-          size_t t1_vec_size = 0;
-          size_t t2_vec_size = 0;
-          
-          if (id_ == 0 && gp_g->permutation.size() >= 2) {
-            // Party 0: first element of each permutation set gives the size
-            t1_vec_size = gp_g->permutation[0].size();
-            t2_vec_size = gp_g->permutation[1].size();
-          } else if (id_ != 0 && gp_g->permutation.size() >= 2) {
-            // Other parties: permutation[0] is for T1, permutation[1] is for T2
-            t1_vec_size = gp_g->permutation[0].size();
-            t2_vec_size = gp_g->permutation[1].size();
-          } else {
-            // Fallback: deduce from input/output sizes
-            size_t total_output = gp_g->outs.size();
-            t2_vec_size = total_output / 2;  // output is [key2, v_out]
-            size_t total_input = gp_g->in.size();
-            t1_vec_size = (total_input - t2_vec_size) / 2;  // input is [key1, v1, key2]
-          }
-          
-          // T1 compaction preprocessing
-          std::vector<AddShare<Ring>> t1_shuffle_a(t1_vec_size);
-          std::vector<TPShare<Ring>> t1_shuffle_tp_a(t1_vec_size);
-          std::vector<AddShare<Ring>> t1_shuffle_b(t1_vec_size);
-          std::vector<TPShare<Ring>> t1_shuffle_tp_b(t1_vec_size);
-          std::vector<AddShare<Ring>> t1_shuffle_c(t1_vec_size);
-          std::vector<TPShare<Ring>> t1_shuffle_tp_c(t1_vec_size);
-          
-          for (int i = 0; i < t1_vec_size; i++) {
-            randomShare(nP_, id_, rgen_, t1_shuffle_a[i], t1_shuffle_tp_a[i]);
-            randomShare(nP_, id_, rgen_, t1_shuffle_b[i], t1_shuffle_tp_b[i]);
-            randomShare(nP_, id_, rgen_, t1_shuffle_c[i], t1_shuffle_tp_c[i]);
-          }
-          
-          std::vector<int> t1_shuffle_pi;
-          std::vector<std::vector<int>> t1_shuffle_tp_pi_all;
-          if (id_ != 0 && gp_g->permutation.size() > 0) {
-            // Party i gets its own T1 permutation from permutation[0]
-            t1_shuffle_pi = gp_g->permutation[0];
-          } else if (id_ == 0 && gp_g->permutation.size() > 0) {
-            // Party 0 gets all parties' T1 permutations
-            // Assuming permutation is structured as a 2D array where first index is permutation set
-            // We need to extract just the T1 permutations for all parties
-            // This requires the gate to store it properly - for now assume permutation[0] has it
-            t1_shuffle_tp_pi_all.resize(nP_);
-            for (int p = 0; p < nP_; ++p) {
-              t1_shuffle_tp_pi_all[p] = gp_g->permutation[0];  // Simplified - needs proper structure
-            }
-          }
-          
-          std::vector<Ring> t1_shuffle_delta(t1_vec_size);
-          generateShuffleDeltaVector(nP_, id_, rgen_, t1_shuffle_delta, t1_shuffle_tp_a, 
-                                    t1_shuffle_tp_b, t1_shuffle_tp_c,
-                                    t1_shuffle_tp_pi_all, t1_vec_size, rand_sh_sec, idx_rand_sh_sec);
-          
-          // T1 multiplication triples for label computation
-          std::vector<AddShare<Ring>> t1_mult_triple_a(t1_vec_size);
-          std::vector<TPShare<Ring>> t1_mult_tp_triple_a(t1_vec_size);
-          std::vector<AddShare<Ring>> t1_mult_triple_b(t1_vec_size);
-          std::vector<TPShare<Ring>> t1_mult_tp_triple_b(t1_vec_size);
-          std::vector<AddShare<Ring>> t1_mult_triple_c(t1_vec_size);
-          std::vector<TPShare<Ring>> t1_mult_tp_triple_c(t1_vec_size);
-          
-          for (int i = 0; i < t1_vec_size; i++) {
-            randomShare(nP_, id_, rgen_, t1_mult_triple_a[i], t1_mult_tp_triple_a[i]);
-            randomShare(nP_, id_, rgen_, t1_mult_triple_b[i], t1_mult_tp_triple_b[i]);
-            Ring tp_prod;
-            if (id_ == 0) { tp_prod = t1_mult_tp_triple_a[i].secret() * t1_mult_tp_triple_b[i].secret(); }
-            randomShareSecret(nP_, id_, rgen_, t1_mult_triple_c[i], t1_mult_tp_triple_c[i], tp_prod, rand_sh_sec, idx_rand_sh_sec);
-          }
-          
-          // T2 compaction preprocessing
-          std::vector<AddShare<Ring>> t2_shuffle_a(t2_vec_size);
-          std::vector<TPShare<Ring>> t2_shuffle_tp_a(t2_vec_size);
-          std::vector<AddShare<Ring>> t2_shuffle_b(t2_vec_size);
-          std::vector<TPShare<Ring>> t2_shuffle_tp_b(t2_vec_size);
-          std::vector<AddShare<Ring>> t2_shuffle_c(t2_vec_size);
-          std::vector<TPShare<Ring>> t2_shuffle_tp_c(t2_vec_size);
-          
-          for (int i = 0; i < t2_vec_size; i++) {
-            randomShare(nP_, id_, rgen_, t2_shuffle_a[i], t2_shuffle_tp_a[i]);
-            randomShare(nP_, id_, rgen_, t2_shuffle_b[i], t2_shuffle_tp_b[i]);
-            randomShare(nP_, id_, rgen_, t2_shuffle_c[i], t2_shuffle_tp_c[i]);
-          }
-          
-          std::vector<int> t2_shuffle_pi;
-          std::vector<std::vector<int>> t2_shuffle_tp_pi_all;
-          if (id_ != 0 && gp_g->permutation.size() > 1) {
-            // Party i gets its own T2 permutation from permutation[1]
-            t2_shuffle_pi = gp_g->permutation[1];
-          } else if (id_ == 0 && gp_g->permutation.size() > 1) {
-            // Party 0 gets all parties' T2 permutations
-            t2_shuffle_tp_pi_all.resize(nP_);
-            for (int p = 0; p < nP_; ++p) {
-              t2_shuffle_tp_pi_all[p] = gp_g->permutation[1];  // Simplified - needs proper structure
-            }
-          }
-          
-          std::vector<Ring> t2_shuffle_delta(t2_vec_size);
-          generateShuffleDeltaVector(nP_, id_, rgen_, t2_shuffle_delta, t2_shuffle_tp_a, 
-                                    t2_shuffle_tp_b, t2_shuffle_tp_c,
-                                    t2_shuffle_tp_pi_all, t2_vec_size, rand_sh_sec, idx_rand_sh_sec);
-          
-          // T2 multiplication triples for label computation
-          std::vector<AddShare<Ring>> t2_mult_triple_a(t2_vec_size);
-          std::vector<TPShare<Ring>> t2_mult_tp_triple_a(t2_vec_size);
-          std::vector<AddShare<Ring>> t2_mult_triple_b(t2_vec_size);
-          std::vector<TPShare<Ring>> t2_mult_tp_triple_b(t2_vec_size);
-          std::vector<AddShare<Ring>> t2_mult_triple_c(t2_vec_size);
-          std::vector<TPShare<Ring>> t2_mult_tp_triple_c(t2_vec_size);
-          
-          for (int i = 0; i < t2_vec_size; i++) {
-            randomShare(nP_, id_, rgen_, t2_mult_triple_a[i], t2_mult_tp_triple_a[i]);
-            randomShare(nP_, id_, rgen_, t2_mult_triple_b[i], t2_mult_tp_triple_b[i]);
-            Ring tp_prod;
-            if (id_ == 0) { tp_prod = t2_mult_tp_triple_a[i].secret() * t2_mult_tp_triple_b[i].secret(); }
-            randomShareSecret(nP_, id_, rgen_, t2_mult_triple_c[i], t2_mult_tp_triple_c[i], tp_prod, rand_sh_sec, idx_rand_sh_sec);
-          }
-          
-          // Multiplication triples for difference * key (Step 3)
-          std::vector<AddShare<Ring>> diff_mult_triple_a(t1_vec_size);
-          std::vector<TPShare<Ring>> diff_mult_tp_triple_a(t1_vec_size);
-          std::vector<AddShare<Ring>> diff_mult_triple_b(t1_vec_size);
-          std::vector<TPShare<Ring>> diff_mult_tp_triple_b(t1_vec_size);
-          std::vector<AddShare<Ring>> diff_mult_triple_c(t1_vec_size);
-          std::vector<TPShare<Ring>> diff_mult_tp_triple_c(t1_vec_size);
-          
-          for (int i = 0; i < t1_vec_size; i++) {
-            randomShare(nP_, id_, rgen_, diff_mult_triple_a[i], diff_mult_tp_triple_a[i]);
-            randomShare(nP_, id_, rgen_, diff_mult_triple_b[i], diff_mult_tp_triple_b[i]);
-            Ring tp_prod;
-            if (id_ == 0) { tp_prod = diff_mult_tp_triple_a[i].secret() * diff_mult_tp_triple_b[i].secret(); }
-            randomShareSecret(nP_, id_, rgen_, diff_mult_triple_c[i], diff_mult_tp_triple_c[i], tp_prod, rand_sh_sec, idx_rand_sh_sec);
-          }
-          
-          // Reverse compaction preprocessing (for T2)
-          std::vector<AddShare<Ring>> revcompact_shuffle_a(t2_vec_size);
-          std::vector<TPShare<Ring>> revcompact_shuffle_tp_a(t2_vec_size);
-          std::vector<AddShare<Ring>> revcompact_shuffle_b(t2_vec_size);
-          std::vector<TPShare<Ring>> revcompact_shuffle_tp_b(t2_vec_size);
-          std::vector<AddShare<Ring>> revcompact_shuffle_c(t2_vec_size);
-          std::vector<TPShare<Ring>> revcompact_shuffle_tp_c(t2_vec_size);
-          
-          for (int i = 0; i < t2_vec_size; i++) {
-            randomShare(nP_, id_, rgen_, revcompact_shuffle_a[i], revcompact_shuffle_tp_a[i]);
-            randomShare(nP_, id_, rgen_, revcompact_shuffle_b[i], revcompact_shuffle_tp_b[i]);
-            randomShare(nP_, id_, rgen_, revcompact_shuffle_c[i], revcompact_shuffle_tp_c[i]);
-          }
-          
-          std::vector<int> revcompact_shuffle_pi = t2_shuffle_pi;  // Reuse T2 permutation
-          std::vector<std::vector<int>> revcompact_shuffle_tp_pi_all = t2_shuffle_tp_pi_all;
-          
-          std::vector<Ring> revcompact_shuffle_delta(t2_vec_size);
-          generateShuffleDeltaVector(nP_, id_, rgen_, revcompact_shuffle_delta, revcompact_shuffle_tp_a, 
-                                    revcompact_shuffle_tp_b, revcompact_shuffle_tp_c,
-                                    revcompact_shuffle_tp_pi_all, t2_vec_size, rand_sh_sec, idx_rand_sh_sec);
-          
-          // Create and populate the preprocessing structure
-          auto preproc_gp = std::make_unique<PreprocGroupwisePropagateGate<Ring>>();
-          preproc_gp->t1_shuffle_a = std::move(t1_shuffle_a);
-          preproc_gp->t1_shuffle_tp_a = std::move(t1_shuffle_tp_a);
-          preproc_gp->t1_shuffle_b = std::move(t1_shuffle_b);
-          preproc_gp->t1_shuffle_tp_b = std::move(t1_shuffle_tp_b);
-          preproc_gp->t1_shuffle_c = std::move(t1_shuffle_c);
-          preproc_gp->t1_shuffle_tp_c = std::move(t1_shuffle_tp_c);
-          preproc_gp->t1_shuffle_delta = std::move(t1_shuffle_delta);
-          preproc_gp->t1_shuffle_pi = std::move(t1_shuffle_pi);
-          preproc_gp->t1_shuffle_tp_pi_all = std::move(t1_shuffle_tp_pi_all);
-          preproc_gp->t1_mult_triple_a = std::move(t1_mult_triple_a);
-          preproc_gp->t1_mult_tp_triple_a = std::move(t1_mult_tp_triple_a);
-          preproc_gp->t1_mult_triple_b = std::move(t1_mult_triple_b);
-          preproc_gp->t1_mult_tp_triple_b = std::move(t1_mult_tp_triple_b);
-          preproc_gp->t1_mult_triple_c = std::move(t1_mult_triple_c);
-          preproc_gp->t1_mult_tp_triple_c = std::move(t1_mult_tp_triple_c);
-          
-          preproc_gp->t2_shuffle_a = std::move(t2_shuffle_a);
-          preproc_gp->t2_shuffle_tp_a = std::move(t2_shuffle_tp_a);
-          preproc_gp->t2_shuffle_b = std::move(t2_shuffle_b);
-          preproc_gp->t2_shuffle_tp_b = std::move(t2_shuffle_tp_b);
-          preproc_gp->t2_shuffle_c = std::move(t2_shuffle_c);
-          preproc_gp->t2_shuffle_tp_c = std::move(t2_shuffle_tp_c);
-          preproc_gp->t2_shuffle_delta = std::move(t2_shuffle_delta);
-          preproc_gp->t2_shuffle_pi = std::move(t2_shuffle_pi);
-          preproc_gp->t2_shuffle_tp_pi_all = std::move(t2_shuffle_tp_pi_all);
-          preproc_gp->t2_mult_triple_a = std::move(t2_mult_triple_a);
-          preproc_gp->t2_mult_tp_triple_a = std::move(t2_mult_tp_triple_a);
-          preproc_gp->t2_mult_triple_b = std::move(t2_mult_triple_b);
-          preproc_gp->t2_mult_tp_triple_b = std::move(t2_mult_tp_triple_b);
-          preproc_gp->t2_mult_triple_c = std::move(t2_mult_triple_c);
-          preproc_gp->t2_mult_tp_triple_c = std::move(t2_mult_tp_triple_c);
-          
-          preproc_gp->diff_mult_triple_a = std::move(diff_mult_triple_a);
-          preproc_gp->diff_mult_tp_triple_a = std::move(diff_mult_tp_triple_a);
-          preproc_gp->diff_mult_triple_b = std::move(diff_mult_triple_b);
-          preproc_gp->diff_mult_tp_triple_b = std::move(diff_mult_tp_triple_b);
-          preproc_gp->diff_mult_triple_c = std::move(diff_mult_triple_c);
-          preproc_gp->diff_mult_tp_triple_c = std::move(diff_mult_tp_triple_c);
-          
-          preproc_gp->revcompact_shuffle_a = std::move(revcompact_shuffle_a);
-          preproc_gp->revcompact_shuffle_tp_a = std::move(revcompact_shuffle_tp_a);
-          preproc_gp->revcompact_shuffle_b = std::move(revcompact_shuffle_b);
-          preproc_gp->revcompact_shuffle_tp_b = std::move(revcompact_shuffle_tp_b);
-          preproc_gp->revcompact_shuffle_c = std::move(revcompact_shuffle_c);
-          preproc_gp->revcompact_shuffle_tp_c = std::move(revcompact_shuffle_tp_c);
-          preproc_gp->revcompact_shuffle_delta = std::move(revcompact_shuffle_delta);
-          preproc_gp->revcompact_shuffle_pi = std::move(revcompact_shuffle_pi);
-          preproc_gp->revcompact_shuffle_tp_pi_all = std::move(revcompact_shuffle_tp_pi_all);
-          
-          preproc_.gates[gate->out] = std::move(preproc_gp);
+              std::move(std::make_unique<PreprocShuffleGate<Ring>>(r_1, r_2, delta_r, pi, tp_pi_all));
           break;
         }
 
@@ -980,67 +597,54 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
 
 void OfflineEvaluator::setWireMasks(const std::unordered_map<common::utils::wire_t, int>& input_pid_map) {
   std::vector<Ring> rand_sh_sec;
-  std::vector<std::vector<Ring>> delta_sh_vec(nP_, std::vector<Ring>());
+  std::vector<std::vector<Ring>> shuffle_delta_sh(nP_, std::vector<Ring>());
 
   if (id_ == 0) {
-    setWireMasksParty(input_pid_map, rand_sh_sec, delta_sh_vec);
-
-    for (int pid = 1; pid < nP_; ++pid) {
-      size_t delta_sh_num = delta_sh_vec[pid - 1].size();
-      network_->send(pid, &delta_sh_num, sizeof(size_t));
-      network_->send(pid, delta_sh_vec[pid - 1].data(), delta_sh_num * sizeof(size_t));
-    }
-
+    setWireMasksParty(input_pid_map, rand_sh_sec, shuffle_delta_sh);
+    
     size_t rand_sh_sec_num = rand_sh_sec.size();
-    size_t delta_sh_last_num = delta_sh_vec[nP_ - 1].size();
-    size_t arith_comm = rand_sh_sec_num;
-    std::vector<size_t> lengths(3);
-    lengths[0] = arith_comm;
-    lengths[1] = rand_sh_sec_num;
-    lengths[2] = delta_sh_last_num;
 
-    network_->send(nP_, lengths.data(), sizeof(size_t) * lengths.size());
-
-    std::vector<Ring> offline_arith_comm(arith_comm);
-
-    for (size_t i = 0; i < rand_sh_sec_num; i++) {
-      offline_arith_comm[i] = rand_sh_sec[i];
+    // Send shuffle_delta_sh to each computing party (1 to nP)
+    // Party i receives shuffle_delta_sh[i-1] which contains its delta values
+    for (int pid = 1; pid <= nP_; ++pid) {
+      size_t shuffle_delta_sh_num = shuffle_delta_sh[pid - 1].size();
+      network_->send(pid, &shuffle_delta_sh_num, sizeof(size_t));
+      network_->send(pid, shuffle_delta_sh[pid - 1].data(), shuffle_delta_sh_num * sizeof(Ring));
     }
-    network_->send(nP_, offline_arith_comm.data(), sizeof(Ring) * arith_comm);
-    network_->send(nP_, delta_sh_vec[nP_ - 1].data(), sizeof(Ring) * delta_sh_last_num);
+
+    // Send rand_sh_sec only to party nP
+    network_->send(nP_, &rand_sh_sec_num, sizeof(size_t));
+    network_->send(nP_, rand_sh_sec.data(), sizeof(Ring) * rand_sh_sec_num);
 
   } else if (id_ != nP_) {
-
-    size_t delta_sh_num;
+    // Parties 1 to nP-1 receive their shuffle_delta_sh values
+    size_t shuffle_delta_sh_num;
     usleep(latency_);
-    network_->recv(0, &delta_sh_num, sizeof(size_t));
-    std::vector<std::vector<Ring>> delta_sh_vec(nP_);
-    delta_sh_vec[id_ - 1] = std::vector<Ring>(delta_sh_num);
-    network_->recv(0, delta_sh_vec[id_ - 1].data(), delta_sh_num * sizeof(Ring));
-    setWireMasksParty(input_pid_map, rand_sh_sec, delta_sh_vec);
+    network_->recv(0, &shuffle_delta_sh_num, sizeof(size_t));
+    std::vector<Ring> shuffle_delta_sh_flat(shuffle_delta_sh_num);
+    network_->recv(0, shuffle_delta_sh_flat.data(), shuffle_delta_sh_num * sizeof(Ring));
+    
+    std::vector<std::vector<Ring>> shuffle_delta_sh(nP_, std::vector<Ring>());
+    shuffle_delta_sh[id_ - 1] = shuffle_delta_sh_flat;
+    setWireMasksParty(input_pid_map, rand_sh_sec, shuffle_delta_sh);
 
   } else {
-
-    std::vector<size_t> lengths(3);
+    // Party nP receives both shuffle_delta_sh and rand_sh_sec
+    size_t shuffle_delta_sh_num;
     usleep(latency_);
-    network_->recv(0, lengths.data(), sizeof(size_t) * lengths.size());
-    size_t arith_comm = lengths[0];
-    size_t rand_sh_sec_num = lengths[1];
-    size_t delta_sh_num = lengths[2];
+    network_->recv(0, &shuffle_delta_sh_num, sizeof(size_t));
+    std::vector<Ring> shuffle_delta_sh_flat(shuffle_delta_sh_num);
+    network_->recv(0, shuffle_delta_sh_flat.data(), shuffle_delta_sh_num * sizeof(Ring));
 
-    std::vector<Ring> offline_arith_comm(arith_comm);
-    network_->recv(0, offline_arith_comm.data(), sizeof(Ring) * arith_comm);
-
-    std::vector<std::vector<Ring>> delta_sh_vec(nP_);
-    delta_sh_vec[id_ - 1] = std::vector<Ring>(delta_sh_num);
-    network_->recv(0, delta_sh_vec[id_ - 1].data(), sizeof(Ring) * delta_sh_num);
-
+    size_t rand_sh_sec_num;
+    usleep(latency_);
+    network_->recv(0, &rand_sh_sec_num, sizeof(size_t));
     rand_sh_sec.resize(rand_sh_sec_num);
-    for (int i = 0; i < rand_sh_sec_num; i++) {
-      rand_sh_sec[i] = offline_arith_comm[i];
-    }
+    network_->recv(0, rand_sh_sec.data(), sizeof(Ring) * rand_sh_sec_num);
 
-    setWireMasksParty(input_pid_map, rand_sh_sec, delta_sh_vec);
+    std::vector<std::vector<Ring>> shuffle_delta_sh(nP_, std::vector<Ring>());
+    shuffle_delta_sh[nP_ - 1] = shuffle_delta_sh_flat;
+    setWireMasksParty(input_pid_map, rand_sh_sec, shuffle_delta_sh);
   }
 }
 

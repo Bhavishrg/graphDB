@@ -36,37 +36,36 @@ common::utils::Circuit<Ring> generateGroupwisePropagateCircuit(int nP, int pid,
     std::vector<common::utils::wire_t> key2_vector(t2_vec_size);
     std::generate(key2_vector.begin(), key2_vector.end(), [&]() { return circ.newInputWire(); });
 
-    // Prepare permutations (two separate permutations: one for T1, one for T2)
-    std::vector<std::vector<int>> permutation;
-    
-    // T1 permutation
+    // Prepare permutations for T1 compaction
+    std::vector<std::vector<int>> permutation_t1;
     std::vector<int> t1_perm(t1_vec_size);
     for (size_t i = 0; i < t1_vec_size; ++i) {
         t1_perm[i] = i;
     }
+    for (int p = 0; p < nP; ++p) {
+        permutation_t1.push_back(t1_perm);
+    }
     
-    // T2 permutation
+    // Prepare permutations for T2 compaction
+    std::vector<std::vector<int>> permutation_t2;
     std::vector<int> t2_perm(t2_vec_size);
     for (size_t i = 0; i < t2_vec_size; ++i) {
         t2_perm[i] = i;
     }
+    for (int p = 0; p < nP; ++p) {
+        permutation_t2.push_back(t2_perm);
+    }
     
-    // For party 0, we need all parties' permutations
-    // For other parties, just their own permutation
-    if (pid == 0) {
-        // Party 0 stores all parties' permutations
-        // For simplicity, using same permutation for all parties
-        permutation.push_back(t1_perm);  // T1 permutation
-        permutation.push_back(t2_perm);  // T2 permutation
-    } else {
-        // Other parties store their own permutations
-        permutation.push_back(t1_perm);  // T1 permutation
-        permutation.push_back(t2_perm);  // T2 permutation
+    // Prepare reverse permutation (same as t2 for identity permutation)
+    std::vector<std::vector<int>> permutation_rev;
+    for (int p = 0; p < nP; ++p) {
+        permutation_rev.push_back(t2_perm);
     }
 
-    // Use the dedicated Group-wise Propagate gate
-    auto [output_key2, output_v] = circ.addGroupwisePropagateGate(key1_vector, v1_vector, 
-                                                                    key2_vector, permutation);
+    // Use the groupwise propagate subcircuit
+    auto [output_key2, output_v] = circ.addGroupwisePropagateSubcircuit(key1_vector, v1_vector, 
+                                                                          key2_vector, permutation_t1, 
+                                                                          permutation_t2, permutation_rev, pid);
 
     // Set outputs: key2 (restored) and v (propagated values)
     for (size_t i = 0; i < t2_vec_size; ++i) {
@@ -237,7 +236,10 @@ void benchmark(const bpo::variables_map& opts) {
     
     for (size_t i = 0; i < circ.gates_by_level.size(); ++i) {
         eval.evaluateGatesAtDepth(i);
+        // Sync after each level to ensure all parties stay synchronized
+        network->sync();
     }
+    network->sync();
     
     auto outputs = eval.getOutputs();
     std::cout << "Number of outputs: " << outputs.size() << std::endl;
