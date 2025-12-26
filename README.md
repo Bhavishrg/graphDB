@@ -1,6 +1,6 @@
 # GraphDB
 
-This directory contains the implementation of the secure graph database protocol.
+This directory contains the implementation of the Grapharo framework.
 The protocol is implemented in C++17 and [CMake](https://cmake.org/) is used as the build system.
 
 ## External Dependencies
