@@ -47,38 +47,66 @@ common::utils::Circuit<Ring> generateGroupwisePropagateCircuit(int nP, int pid,
     std::generate(v2_vector.begin(), v2_vector.end(), [&]() { return circ.newInputWire(); });
     std::generate(key22_vector.begin(), key22_vector.end(), [&]() { return circ.newInputWire(); });
 
-    // Prepare permutations for Gate 1
-    std::vector<std::vector<int>> permutation1;
+    // Prepare permutations for Gate 1 - T1 compaction
+    std::vector<std::vector<int>> permutation1_t1;
     std::vector<int> t1a_perm(t1a_vec_size);
     for (size_t i = 0; i < t1a_vec_size; ++i) {
         t1a_perm[i] = i;
     }
+    for (int p = 0; p < nP; ++p) {
+        permutation1_t1.push_back(t1a_perm);
+    }
+    
+    // Prepare permutations for Gate 1 - T2 compaction
+    std::vector<std::vector<int>> permutation1_t2;
     std::vector<int> t2a_perm(t2a_vec_size);
     for (size_t i = 0; i < t2a_vec_size; ++i) {
         t2a_perm[i] = i;
     }
-    permutation1.push_back(t1a_perm);
-    permutation1.push_back(t2a_perm);
+    for (int p = 0; p < nP; ++p) {
+        permutation1_t2.push_back(t2a_perm);
+    }
     
-    // Prepare permutations for Gate 2
-    std::vector<std::vector<int>> permutation2;
+    // Prepare reverse permutation for Gate 1
+    std::vector<std::vector<int>> permutation1_rev;
+    for (int p = 0; p < nP; ++p) {
+        permutation1_rev.push_back(t2a_perm);
+    }
+    
+    // Prepare permutations for Gate 2 - T1 compaction
+    std::vector<std::vector<int>> permutation2_t1;
     std::vector<int> t1b_perm(t1b_vec_size);
     for (size_t i = 0; i < t1b_vec_size; ++i) {
         t1b_perm[i] = i;
     }
+    for (int p = 0; p < nP; ++p) {
+        permutation2_t1.push_back(t1b_perm);
+    }
+    
+    // Prepare permutations for Gate 2 - T2 compaction
+    std::vector<std::vector<int>> permutation2_t2;
     std::vector<int> t2b_perm(t2b_vec_size);
     for (size_t i = 0; i < t2b_vec_size; ++i) {
         t2b_perm[i] = i;
     }
-    permutation2.push_back(t1b_perm);
-    permutation2.push_back(t2b_perm);
+    for (int p = 0; p < nP; ++p) {
+        permutation2_t2.push_back(t2b_perm);
+    }
+    
+    // Prepare reverse permutation for Gate 2
+    std::vector<std::vector<int>> permutation2_rev;
+    for (int p = 0; p < nP; ++p) {
+        permutation2_rev.push_back(t2b_perm);
+    }
 
-    // Use the dedicated Group-wise Propagate gate
-    auto [output_key21, output_v1] = circ.addGroupwisePropagateGate(key11_vector, v1_vector, 
-                                                                    key12_vector, permutation1);
+    // Use the groupwise propagate subcircuit for both gates
+    auto [output_key21, output_v1] = circ.addGroupwisePropagateSubcircuit(key11_vector, v1_vector, 
+                                                                            key12_vector, permutation1_t1,
+                                                                            permutation1_t2, permutation1_rev, pid);
 
-    auto [output_key22, output_v2] = circ.addGroupwisePropagateGate(key21_vector, v2_vector, 
-                                                                    key22_vector, permutation2);
+    auto [output_key22, output_v2] = circ.addGroupwisePropagateSubcircuit(key21_vector, v2_vector, 
+                                                                            key22_vector, permutation2_t1,
+                                                                            permutation2_t2, permutation2_rev, pid);
 
     // Set outputs: key2 (restored) and v (propagated values)
     for (size_t i = 0; i < t2a_vec_size; ++i) {
@@ -321,7 +349,10 @@ void benchmark(const bpo::variables_map& opts) {
     
     for (size_t i = 0; i < circ.gates_by_level.size(); ++i) {
         eval.evaluateGatesAtDepth(i);
+        // Sync after each level to ensure all parties stay synchronized
+        network->sync();
     }
+    network->sync();
     
     auto outputs = eval.getOutputs();
     std::cout << "Number of outputs: " << outputs.size() << std::endl;
@@ -466,3 +497,4 @@ int main(int argc, char* argv[]) {
     }
     return 0;
 }
+// ./../run.sh grouppropagate_parallel --num-parties 3 --t1a-size 10 --t2a-size 10 --t1b-size 10 --t2b-size 10

@@ -16,23 +16,6 @@ using namespace graphdb;
 using json = nlohmann::json;
 namespace bpo = boost::program_options;
 
-/**
- * Group-wise Index (GI) Protocol Circuit
- * 
- * Based on Section 5.3 of the paper, this protocol takes a secret-shared 
- * data-augmented grouped list ⟨T⟩ of size N, where each entry T[i] = (key, v)
- * and key ∈ {0,1} denotes the start of a group. It outputs a secret-shared 
- * list ⟨T_O⟩ of size N where T_O[i].ind indicates the number of elements in 
- * the group that appear before entry i (excluding zero for the first element 
- * in each group).
- * 
- * Now implemented as a dedicated kGroupwiseIndex gate that encapsulates:
- * 1. Initialize ind vector with sequential indices 0 to N-1
- * 2. Compute (T_c) ← F_Compact(⟨T⟩) - compact entries with key=1 to front
- * 3. Compute key_c and multiply by key to get ind-diff
- * 4. Perform reverse compaction F_Compact^{-1} to redistribute differences
- * 5. Compute final indices via prefix sum: T_O[i].ind = sum_{j=0}^{i-1} ind-diff[j]
- */
 common::utils::Circuit<Ring> generateGroupwiseIndexCircuit(int nP, int pid, size_t vec_size) {
 
     std::cout << "Generating Group-wise Index circuit for vec_size=" << vec_size << std::endl;
@@ -52,15 +35,12 @@ common::utils::Circuit<Ring> generateGroupwiseIndexCircuit(int nP, int pid, size
     for (size_t i = 0; i < vec_size; ++i) {
         tmp_perm[i] = i;
     }
-    permutation.push_back(tmp_perm);
-    if (pid == 0) {
-        for (int i = 1; i < nP; ++i) {
-            permutation.push_back(tmp_perm);
-        }
+    for (int i = 0; i < nP; ++i) {
+        permutation.push_back(tmp_perm);
     }
 
-    // Use the dedicated Group-wise Index gate
-    auto [output_ind, output_key, output_v] = circ.addGroupwiseIndexGate(key_vector, v_vector, permutation);
+    // Use the groupwise index subcircuit
+    auto [output_ind, output_key, output_v] = circ.addGroupwiseIndexSubcircuit(key_vector, v_vector, permutation, pid);
 
     // Set outputs: output_ind (the group-wise index), key (restored), and v (restored)
     for (size_t i = 0; i < vec_size; ++i) {
@@ -218,7 +198,10 @@ void benchmark(const bpo::variables_map& opts) {
     
     for (size_t i = 0; i < circ.gates_by_level.size(); ++i) {
         eval.evaluateGatesAtDepth(i);
+        // Sync after each level to ensure all parties stay synchronized
+        network->sync();
     }
+    network->sync();
     
     auto outputs = eval.getOutputs();
     std::cout << "Number of outputs: " << outputs.size() << std::endl;
@@ -354,3 +337,4 @@ int main(int argc, char* argv[]) {
     }
     return 0;
 }
+// ./../run.sh groupindex --num-parties 3 --vec-size 10

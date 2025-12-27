@@ -48,10 +48,19 @@ class OfflineEvaluator {
   // Generate sharing of a random unknown value.
   static void randomShare(int nP, int pid, RandGenPool& rgen, AddShare<Ring>& share, TPShare<Ring>& tpShare);
 
+  // Generate sharing of a random unknown value.
+  static void randomShare(int nP, int pid, RandGenPool& rgen, AddShare<Ring>& share);
+
   // Generate sharing of a random value known to party. Should be called by
   // dealer when other parties call other variant.
   static void randomShareSecret(int nP, int pid, RandGenPool& rgen,
                                 AddShare<Ring>& share, TPShare<Ring>& tpShare, Ring secret,
+                                std::vector<Ring>& rand_sh_sec, size_t& idx_rand_sh_sec);
+
+  // Generate sharing of a random value known to party. Should be called by
+  // dealer when other parties call other variant.
+  static void randomShareSecret(int nP, int pid, RandGenPool& rgen,
+                                AddShare<Ring>& share, Ring secret,
                                 std::vector<Ring>& rand_sh_sec, size_t& idx_rand_sh_sec);
 
   // Generate sharing of a random unknown permutation.
@@ -67,13 +76,18 @@ class OfflineEvaluator {
                                     std::vector<TPShare<Ring>>& tp_a, std::vector<TPShare<Ring>>& tp_b,
                                     std::vector<int>& pi, size_t& vec_size, std::vector<Ring>& delta_sh, size_t& idx_delta_sh);
 
+  void generateShuffleCorrelation(int nP, int pid, RandGenPool& rgen, std::vector<AddShare<Ring>>& r_1,
+                                  std::vector<AddShare<Ring>>& r_2, std::vector<Ring>& delta_r,
+                                  std::vector<std::vector<int>>& tp_pi_all, size_t& vec_size,
+                                  std::vector<std::vector<Ring>>& shuffle_delta_sh, std::vector<size_t>& idx_shuffle_delta_sh);
+
   // Following methods implement various preprocessing subprotocols.
 
   // Set masks for each wire. Should be called before running any of the other
   // subprotocols.
   void setWireMasksParty(const std::unordered_map<common::utils::wire_t, int>& input_pid_map,
                          std::vector<Ring>& rand_sh_sec,
-                         std::vector<std::vector<Ring>>& delta_sh);
+                         std::vector<std::vector<Ring>>& shuffle_delta_sh);
 
   void setWireMasks(const std::unordered_map<common::utils::wire_t, int>& input_pid_map);
 

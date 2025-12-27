@@ -46,7 +46,7 @@ common::utils::Circuit<Ring> generateParallelGroupIndexCircuit(int nP, int pid, 
     std::generate(key_vector1.begin(), key_vector1.end(), [&]() { return circ.newInputWire(); });
     std::generate(v_vector1.begin(), v_vector1.end(), [&]() { return circ.newInputWire(); });
 
-    auto [ind1, key_out1, v_out1] = circ.addGroupwiseIndexGate(key_vector1, v_vector1, generatePermutation(vec_size1));
+    auto [ind1, key_out1, v_out1] = circ.addGroupwiseIndexSubcircuit(key_vector1, v_vector1, generatePermutation(vec_size1), pid);
 
     // Second groupwise index gate with vec_size2
     std::vector<common::utils::wire_t> key_vector2(vec_size2);
@@ -55,7 +55,7 @@ common::utils::Circuit<Ring> generateParallelGroupIndexCircuit(int nP, int pid, 
     std::generate(key_vector2.begin(), key_vector2.end(), [&]() { return circ.newInputWire(); });
     std::generate(v_vector2.begin(), v_vector2.end(), [&]() { return circ.newInputWire(); });
 
-    auto [ind2, key_out2, v_out2] = circ.addGroupwiseIndexGate(key_vector2, v_vector2, generatePermutation(vec_size2));
+    auto [ind2, key_out2, v_out2] = circ.addGroupwiseIndexSubcircuit(key_vector2, v_vector2, generatePermutation(vec_size2), pid);
     
     // Set outputs from both gates
     for (size_t i = 0; i < vec_size1; ++i) {
@@ -247,6 +247,8 @@ void benchmark(const bpo::variables_map& opts) {
     StatsPoint online_start(*network);
     for (size_t i = 0; i < circ.gates_by_level.size(); ++i) {
         eval.evaluateGatesAtDepth(i);
+        // Sync after each level to ensure all parties stay synchronized
+        network->sync();
     }
     network->sync();
     StatsPoint online_end(*network);
@@ -385,3 +387,4 @@ int main(int argc, char* argv[]) {
     }
     return 0;
 }
+// ./../run.sh groupindex_parallel --num-parties 3 --vec-size1 10 --vec-size2 15

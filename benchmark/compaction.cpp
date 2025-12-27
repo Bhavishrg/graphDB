@@ -44,8 +44,9 @@ common::utils::Circuit<Ring> generateCompactionCircuit(int nP, int pid, size_t v
         }
     }
 
-    // Use the compaction gate with multiple payloads
-    auto [t_compacted, p_compacted] = circ.addCompactGate(t_vector, p_vectors, permutation);
+    // Use the compaction subcircuit with multiple payloads
+    // This implements compaction using shuffle, multiplication, and rewire gates
+    auto [t_compacted, p_compacted, label_reconstructed] = circ.addCompactionSubcircuit(t_vector, p_vectors, permutation, pid);
     
     // Set outputs: compacted t and all p vectors
     for (size_t i = 0; i < vec_size; ++i) {

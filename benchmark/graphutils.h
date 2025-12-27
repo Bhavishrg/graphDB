@@ -241,6 +241,8 @@ static inline Ring pack_pair(Ring a, Ring b) {
 }
 
 inline vector<pair<Ring, Ring>> generate_scale_free(Ring nV, Ring nE, Ring fixed_seed = 42) {
+  // Deterministic (single-threaded) version: previously parallel with shared
+  // mutable state could reorder edge generation and break reproducibility.
   vector<pair<Ring, Ring>> edges;
   if (nV == 0 || nE == 0) return edges;
 
@@ -253,57 +255,26 @@ inline vector<pair<Ring, Ring>> generate_scale_free(Ring nV, Ring nE, Ring fixed
 
   unordered_set<Ring> seen;
   seen.reserve(nE * 2 + 10);
-  mutex edgeMutex, degreeMutex;
 
-  Ring seed = fixed_seed;
+  std::mt19937_64 rng(fixed_seed);
+  std::uniform_int_distribution<Ring> uniV(0, nV - 1);
 
-  #pragma omp parallel
-  {
-    // thread-local random engine
-    int tid = 0;
-    #ifdef _OPENMP
-    tid = omp_get_thread_num();
-    #endif
-    std::mt19937_64 rng(seed + tid);
-    uniform_int_distribution<Ring> uniV(0, nV - 1);
+  while (edges.size() < static_cast<size_t>(nE)) {
+    Ring src = uniV(rng);
+    if (degreeList.empty()) break;
+    Ring dst = degreeList[rng() % degreeList.size()];
 
-    while (true) {
-      Ring currentSize;
-      {
-        lock_guard<mutex> lock(edgeMutex);
-        currentSize = edges.size();
-        if (currentSize >= nE) break;
-      }
+    if (src == dst) continue; // avoid self-loops
 
-      Ring src = uniV(rng);
-      Ring dst;
-      
-      {
-        lock_guard<mutex> lock(degreeMutex);
-        if (degreeList.empty()) break;
-        dst = degreeList[rng() % degreeList.size()];
-      }
+    Ring key = pack_pair(src, dst);
+    if (seen.find(key) != seen.end()) continue; // avoid duplicate
 
-      if (src == dst) continue; // avoid self-loops
+    edges.emplace_back(src, dst);
+    seen.insert(key);
 
-      Ring key = pack_pair(src, dst);
-      
-      {
-        lock_guard<mutex> lock(edgeMutex);
-        if (edges.size() >= nE) break;
-        if (seen.find(key) != seen.end()) continue; // avoid duplicate
-
-        edges.emplace_back(src, dst);
-        seen.insert(key);
-      }
-
-      // update degreeList to increase attachment probability
-      {
-        lock_guard<mutex> lock(degreeMutex);
-        degreeList.push_back(dst);
-        degreeList.push_back(src);
-      }
-    }
+    // update degreeList to increase attachment probability
+    degreeList.push_back(dst);
+    degreeList.push_back(src);
   }
 
   return edges;
@@ -317,70 +288,121 @@ inline Daglist build_daglist(Ring nV, const vector<pair<Ring, Ring>>& edges) {
   vector<DagEntry> entries;
   entries.reserve(total);
 
-  // First, add all vertex entries
+  // First, add all vertex entries (parallelizable but overhead likely not worth it for small nV)
   for (Ring v = 0; v < nV; ++v) {
     entries.emplace_back(v, v, 1, 0, 0, 0, 0);
   }
 
   // Group edges by source vertex
   vector<vector<Ring>> outEdges(nV);
+  
+  // Step 1: Count edges per source (parallel)
+  vector<Ring> outDegrees(nV, 0);
+  #pragma omp parallel for
+  for (Ring i = 0; i < nE; ++i) {
+    #pragma omp atomic
+    outDegrees[edges[i].first]++;
+  }
+  
+  // Step 2: Reserve space for each vertex's edges
+  for (Ring v = 0; v < nV; ++v) {
+    outEdges[v].reserve(outDegrees[v]);
+  }
+  
+  // Step 3: Fill edges
   for (Ring i = 0; i < nE; ++i) {
     outEdges[edges[i].first].push_back(i);
   }
 
-  // Add edges grouped by source
+  // Compute edge start positions for each vertex
+  vector<Ring> edgeStartPos(nV);
+  edgeStartPos[0] = nV;
+  for (Ring v = 1; v < nV; ++v) {
+    edgeStartPos[v] = edgeStartPos[v-1] + outEdges[v-1].size();
+  }
+  
+  // Resize entries to final size so we can fill in parallel
+  entries.resize(total);
+  
+  // Add edges grouped by source - parallel by vertex
+  #pragma omp parallel for schedule(dynamic)
   for (Ring v = 0; v < nV; ++v) {
+    Ring writePos = edgeStartPos[v];
     for (Ring edgeIdx : outEdges[v]) {
-      entries.emplace_back(edges[edgeIdx].first, edges[edgeIdx].second, 0, 0, 0, 0, 0);
+      entries[writePos++] = DagEntry(edges[edgeIdx].first, edges[edgeIdx].second, 0, 0, 0, 0, 0);
     }
   }
 
-  // Build source-ordered index: for each vertex, vertex entry then its out-edges
-  vector<Ring> srcOrder; srcOrder.reserve(total);
+  // Build source-ordered index - parallel construction
+  vector<Ring> srcOrder(total);
+  #pragma omp parallel for schedule(dynamic)
   for (Ring v = 0; v < nV; ++v) {
-    srcOrder.push_back(v);
-    Ring edgeStart = nV;
+    Ring writePos = v * (1 + static_cast<Ring>(outEdges[v].size()));
+    // Adjust writePos to account for vertices with different out-degrees
+    writePos = v; // Start with vertex position
     for (Ring u = 0; u < v; ++u) {
-      edgeStart += outEdges[u].size();
+      writePos += outEdges[u].size();
     }
+    
+    srcOrder[writePos] = v;
+    Ring edgeStart = edgeStartPos[v];
     for (Ring i = 0; i < outEdges[v].size(); ++i) {
-      srcOrder.push_back(edgeStart + i);
+      srcOrder[writePos + i + 1] = edgeStart + i;
     }
   }
 
-  // Build dest-ordered index: for each vertex, its in-edges then the vertex entry
+  // Build dest-ordered index - first group edges by destination (parallel)
   vector<vector<Ring>> inEdges(nV);
-  Ring edgePos = nV;
+  
+  // Count in-degrees (parallel)
+  vector<Ring> inDegrees(nV, 0);
+  #pragma omp parallel for
+  for (Ring i = nV; i < total; ++i) {
+    Ring dst = entries[i].dst;
+    #pragma omp atomic
+    inDegrees[dst]++;
+  }
+  
+  // Reserve space
   for (Ring v = 0; v < nV; ++v) {
-    for (Ring i = 0; i < outEdges[v].size(); ++i) {
-      Ring dst = entries[edgePos].dst;
-      inEdges[dst].push_back(edgePos);
-      edgePos++;
-    }
+    inEdges[v].reserve(inDegrees[v]);
+  }
+  
+  // Fill in-edges (sequential to maintain order)
+  for (Ring edgePos = nV; edgePos < total; ++edgePos) {
+    Ring dst = entries[edgePos].dst;
+    inEdges[dst].push_back(edgePos);
   }
 
-  vector<Ring> dstOrder; dstOrder.reserve(total);
+  // Build destination-ordered array - parallel construction
+  vector<Ring> dstOrder(total);
+  #pragma omp parallel for schedule(dynamic)
   for (Ring v = 0; v < nV; ++v) {
-    for (Ring edgeIdx : inEdges[v]) {
-      dstOrder.push_back(edgeIdx);
+    // Calculate write position for vertex v in dstOrder
+    Ring writePos = v;
+    for (Ring u = 0; u < v; ++u) {
+      writePos += inEdges[u].size();
     }
-    dstOrder.push_back(v);
+    
+    // Write in-edges first
+    for (Ring i = 0; i < inEdges[v].size(); ++i) {
+      dstOrder[writePos + i] = inEdges[v][i];
+    }
+    // Then write vertex entry
+    dstOrder[writePos + inEdges[v].size()] = v;
   }
 
-  // vertex-order is the current layout (all vertices, then edges grouped by source)
-  // Build reverse maps: position of each index in each ordering
-  vector<Ring> pos_in_src(total, 0), pos_in_dst(total, 0), pos_in_vert(total, 0);
+  // Build reverse maps: position of each index in each ordering (parallel)
+  vector<Ring> pos_in_src(total), pos_in_dst(total), pos_in_vert(total);
   
   #pragma omp parallel for
-  for (Ring i = 0; i < srcOrder.size(); ++i) pos_in_src[srcOrder[i]] = i;
-  
-  #pragma omp parallel for
-  for (Ring i = 0; i < dstOrder.size(); ++i) pos_in_dst[dstOrder[i]] = i;
-  
-  #pragma omp parallel for
-  for (Ring i = 0; i < total; ++i) pos_in_vert[i] = i;
+  for (Ring i = 0; i < total; ++i) {
+    pos_in_src[srcOrder[i]] = i;
+    pos_in_dst[dstOrder[i]] = i;
+    pos_in_vert[i] = i;
+  }
 
-  // Fill sigs, sigv, sigd fields
+  // Fill sigs, sigv, sigd fields (parallel)
   #pragma omp parallel for
   for (Ring idx = 0; idx < total; ++idx) {
     entries[idx].sigs = pos_in_src[idx];

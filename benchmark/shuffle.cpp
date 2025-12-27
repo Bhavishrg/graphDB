@@ -9,6 +9,7 @@
 #include <iostream>
 #include <memory>
 #include <omp.h>
+#include <random>
 
 #include "utils.h"
 
@@ -16,22 +17,105 @@ using namespace graphdb;
 using json = nlohmann::json;
 namespace bpo = boost::program_options;
 
-common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size) {
-
-    std::cout << "Generating circuit" << std::endl;
-
-    // Note: Permutations will be generated randomly during preprocessing
-    // Here we just pass placeholder identity permutations
-    std::vector<int> base_perm(vec_size);
+// Generate different types of test permutations
+std::vector<int> generateTestPermutation(const std::string& perm_type, size_t vec_size, size_t party_id, size_t seed) {
+    std::vector<int> perm(vec_size);
+    
+    // Initialize with identity
     for (size_t i = 0; i < vec_size; ++i) {
-        base_perm[i] = static_cast<int>(i);
+        perm[i] = static_cast<int>(i);
     }
-    std::vector<std::vector<int>> permutation;
-    permutation.push_back(base_perm);
-    if (pid == 0) {
-        for (int i = 1; i < nP; ++i) {
-            permutation.push_back(base_perm);
+    
+    if (perm_type == "identity") {
+        // Already initialized as identity
+        std::cout << "Party " << party_id << " using IDENTITY permutation" << std::endl;
+    }
+    else if (perm_type == "reverse") {
+        // Reverse: [0,1,2,3] -> [3,2,1,0]
+        std::reverse(perm.begin(), perm.end());
+        std::cout << "Party " << party_id << " using REVERSE permutation" << std::endl;
+    }
+    else if (perm_type == "rotate") {
+        // Rotate left by 1: [0,1,2,3] -> [1,2,3,0]
+        std::rotate(perm.begin(), perm.begin() + 1, perm.end());
+        std::cout << "Party " << party_id << " using ROTATE-LEFT permutation" << std::endl;
+    }
+    else if (perm_type == "cyclic") {
+        // Cyclic shift by party_id positions
+        size_t shift = party_id % vec_size;
+        std::rotate(perm.begin(), perm.begin() + shift, perm.end());
+        std::cout << "Party " << party_id << " using CYCLIC-" << shift << " permutation" << std::endl;
+    }
+    else if (perm_type == "swap-pairs") {
+        // Swap adjacent pairs: [0,1,2,3,4] -> [1,0,3,2,4]
+        for (size_t i = 0; i + 1 < vec_size; i += 2) {
+            std::swap(perm[i], perm[i + 1]);
         }
+        std::cout << "Party " << party_id << " using SWAP-PAIRS permutation" << std::endl;
+    }
+    else if (perm_type == "even-odd") {
+        // Even indices first, then odd: [0,1,2,3,4,5] -> [0,2,4,1,3,5]
+        std::vector<int> temp;
+        for (size_t i = 0; i < vec_size; i += 2) temp.push_back(i);
+        for (size_t i = 1; i < vec_size; i += 2) temp.push_back(i);
+        perm = temp;
+        std::cout << "Party " << party_id << " using EVEN-ODD permutation" << std::endl;
+    }
+    else if (perm_type == "shuffle-blocks") {
+        // Shuffle in blocks of 4: [0,1,2,3,4,5,6,7] -> [4,5,6,7,0,1,2,3]
+        size_t block_size = 4;
+        if (vec_size >= block_size * 2) {
+            std::vector<int> temp;
+            for (size_t block = block_size; block < vec_size; block += block_size) {
+                for (size_t i = block; i < std::min(block + block_size, vec_size); ++i) {
+                    temp.push_back(i);
+                }
+            }
+            for (size_t i = 0; i < block_size && i < vec_size; ++i) {
+                temp.push_back(i);
+            }
+            perm = temp;
+        }
+        std::cout << "Party " << party_id << " using SHUFFLE-BLOCKS permutation" << std::endl;
+    }
+    else if (perm_type == "random") {
+        // Random shuffle with deterministic seed based on party_id
+        std::mt19937 rng(seed + party_id);
+        std::shuffle(perm.begin(), perm.end(), rng);
+        std::cout << "Party " << party_id << " using RANDOM permutation (seed: " << (seed + party_id) << ")" << std::endl;
+    }
+    else {
+        std::cerr << "Unknown permutation type: " << perm_type << ", using identity" << std::endl;
+    }
+    
+    // Print first few elements for verification
+    std::cout << "  Permutation (first 20): [";
+    for (size_t i = 0; i < std::min(static_cast<size_t>(20), vec_size); ++i) {
+        std::cout << perm[i] << (i + 1 == std::min(static_cast<size_t>(20), vec_size) ? "" : ", ");
+    }
+    if (vec_size > 20) std::cout << ", ...";
+    std::cout << "]" << std::endl;
+    
+    return perm;
+}
+
+common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size, const std::string& perm_type, size_t seed) {
+
+    std::cout << "Generating circuit with " << perm_type << " permutation" << std::endl;
+
+    // Generate test permutations based on the specified type
+    std::vector<std::vector<int>> permutation;
+    
+    // Party 0 generates permutations for all parties
+    if (pid == 0) {
+        for (int i = 1; i <= nP; ++i) {
+            auto perm = generateTestPermutation(perm_type, vec_size, i, seed);
+            permutation.push_back(perm);
+        }
+    } else {
+        // Other parties just need their own permutation
+        auto perm = generateTestPermutation(perm_type, vec_size, pid, seed);
+        permutation.push_back(perm);
     }
 
     
@@ -69,6 +153,7 @@ void benchmark(const bpo::variables_map& opts) {
     auto repeat = opts["repeat"].as<size_t>();
     auto port = opts["port"].as<int>();
     auto use_pking = opts["use-pking"].as<bool>();
+    auto perm_type = opts["perm-type"].as<std::string>();
 
     omp_set_nested(1);
     // omp_set_num_threads(nP);
@@ -107,7 +192,7 @@ void benchmark(const bpo::variables_map& opts) {
 
     network->sync();
 
-    auto circ = generateCircuit(nP, pid, vec_size).orderGatesByLevel();
+    auto circ = generateCircuit(nP, pid, vec_size, perm_type, seed).orderGatesByLevel();
     network->sync();
 
 
@@ -158,7 +243,6 @@ void benchmark(const bpo::variables_map& opts) {
             inputs[wire] = input_values[idx];
             // std::cout << "  Wire " << wire << " = " << input_values[idx] << std::endl;
         }
-        std::cout << "Note: Shuffle uses random permutations generated during preprocessing" << std::endl;
         std::cout << "  Set " << input_wires.size() << " input values" << std::endl;
         std::cout << "========================\n" << std::endl;
     }
@@ -273,7 +357,8 @@ bpo::options_description programOptions() {
         ("port", bpo::value<int>()->default_value(10000), "Base port for networking.")
         ("output,o", bpo::value<std::string>(), "File to save benchmarks.")
         ("repeat,r", bpo::value<size_t>()->default_value(1), "Number of times to run benchmarks.")
-        ("use-pking", bpo::value<bool>()->default_value(true), "Use king party for reconstruction (true) or direct reconstruction (false).");
+        ("use-pking", bpo::value<bool>()->default_value(true), "Use king party for reconstruction (true) or direct reconstruction (false).")
+        ("perm-type", bpo::value<std::string>()->default_value("identity"), "Permutation type: identity, reverse, rotate, cyclic, swap-pairs, even-odd, shuffle-blocks, random.");
   return desc;
 }
 // clang-format on
@@ -318,3 +403,5 @@ int main(int argc, char* argv[]) {
     }
     return 0;
 }
+
+// ./../run.sh shuffle --num-parties 2 --vec-size 10 --perm-type reverse
