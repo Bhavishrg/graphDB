@@ -837,3 +837,5 @@ int main(int argc, char* argv[]) {
     }
     return 0;
 }
+
+// usage: ./../run.sh add_vertices --num-parties 2 --num-clients 2 --num-vert 1000 --num-edge 4000
