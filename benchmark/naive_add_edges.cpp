@@ -406,4 +406,4 @@ int main(int argc, char* argv[]) {
     }
     return 0;
 }
-// usage: ./../run.sh naive_add_vertices --num-parties 2 --num-verts 100 --num-edges 200
+// usage: ./../run.sh naive_add_edges --num-parties 2 --num-verts 100 --num-edges 200

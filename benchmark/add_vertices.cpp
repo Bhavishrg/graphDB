@@ -527,7 +527,8 @@ void benchmark(const bpo::variables_map& opts) {
 
     auto num_vert = opts["num-vert"].as<size_t>();
     auto num_edge = opts["num-edge"].as<size_t>();
-    auto vec_size = num_vert + num_edge;
+    auto num_inserts_ = opts["num-inserts"].as<size_t>();
+    auto vec_size = num_vert + num_edge + num_inserts_;
     auto nP = opts["num-parties"].as<int>();
     auto nC = opts["num-clients"].as<int>();
     auto latency = opts["latency"].as<double>();
@@ -554,6 +555,7 @@ void benchmark(const bpo::variables_map& opts) {
                               {"num_clients", nC},
                               {"num_vert", num_vert},
                               {"num_edge", num_edge},
+                              {"num_inserts", num_inserts_},
                               {"operation", "insert_vertices"},
                               {"latency (ms)", latency},
                               {"pid", pid},
@@ -587,7 +589,7 @@ void benchmark(const bpo::variables_map& opts) {
     auto dist_daglist = distribute_daglist(daglist, nC);
     
     // Generate random vertices to insert (insert 20% of current vertices)
-    Ring num_inserts = static_cast<Ring>(nV * 0.2);
+    Ring num_inserts = static_cast<Ring>(num_inserts_);
     std::cout << "Generating random vertices to insert: " << num_inserts << " vertices..." << std::endl;
     dist_daglist = generate_random_vertices_to_insert(dist_daglist, num_inserts, seed);
 
@@ -783,6 +785,7 @@ bpo::options_description programOptions() {
         ("num-clients", bpo::value<int>()->default_value(2), "Number of parties.")
         ("num-vert", bpo::value<size_t>()->default_value(1000), "Number of vertices in the graph.")
         ("num-edge", bpo::value<size_t>()->default_value(4000), "Number of edges in the graph.")
+        ("num-inserts", bpo::value<size_t>(), "Number of vertex insertions (default: num-vert * 0.2).")
         ("num-payloads", bpo::value<size_t>()->default_value(1), "Number of payload vectors.")
         ("latency,l", bpo::value<double>()->default_value(0.5), "Network latency in ms.")
         ("pid,p", bpo::value<size_t>()->required(), "Party ID.")
@@ -824,6 +827,12 @@ int main(int argc, char* argv[]) {
         bpo::notify(opts);
         if (!opts["localhost"].as<bool>() && (opts.count("net-config") == 0)) {
             throw std::runtime_error("Expected one of 'localhost' or 'net-config'");
+        }
+        // Set default value for num-inserts if not provided
+        if (opts.count("num-inserts") == 0) {
+            size_t num_vert = opts["num-vert"].as<size_t>();
+            size_t default_inserts = static_cast<size_t>(num_vert * 0.2);
+            opts.insert(std::make_pair("num-inserts", bpo::variable_value(default_inserts, false)));
         }
     } catch (const std::exception& ex) {
         std::cerr << ex.what() << std::endl;
