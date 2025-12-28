@@ -543,6 +543,23 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
           break;
         }
 
+        case common::utils::GateType::kPublicPerm: {
+          // The permutation is determined from the position_map wire values
+          auto *publicperm_g = static_cast<common::utils::SIMDOGate *>(gate.get());
+          
+          // Extract vec_size from gate metadata and calculate num_payloads
+          size_t vec_size = publicperm_g->vec_size;
+          size_t total_size = publicperm_g->in.size();
+          size_t output_size = publicperm_g->outs.size();
+          
+          // Calculate num_payloads: total_size = vec_size * (1 + num_payloads)
+          size_t num_payloads = (total_size / vec_size) - 1;
+          
+          auto pregate = std::make_unique<PreprocPublicPermGate<Ring>>(vec_size, num_payloads);
+          preproc_.gates[gate->out] = std::move(pregate);
+          break;
+        }
+
         case common::utils::GateType::kDeleteWires: {
           // Delete wires gate preprocessing: shuffle for del + payloads, then reconstruction
           auto *delete_g = static_cast<common::utils::SIMDOGate *>(gate.get());

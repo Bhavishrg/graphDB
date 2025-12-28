@@ -1067,6 +1067,73 @@ namespace graphdb
         }
     }
 
+    void OnlineEvaluator::publicPermEvaluate(const std::vector<common::utils::SIMDOGate> &public_perm_gates) {
+        if (id_ == 0) { return; }
+        if (public_perm_gates.empty()) { return; }
+
+        for (const auto& gate : public_perm_gates) {
+            // Check if this is a kPublicPerm gate with stored permutation or position map in wires
+            if (!gate.permutation.empty() && !gate.permutation[0].empty()) {
+                // Old-style: permutation stored in gate (addConstOpMGate)
+                size_t vec_size = gate.in.size();
+                const auto& perm = gate.permutation[0];
+                
+                
+                // Apply permutation: output[perm[i]] = input[i]
+                for (size_t i = 0; i < vec_size; ++i) {
+                    size_t perm_idx = perm[i];
+                    if (perm_idx >= vec_size) {
+                        continue;
+                    }
+                    wires_[gate.outs[perm_idx]] = wires_[gate.in[i]];
+                }
+            } else {
+                // New-style: position map in first vec_size input wires (addPublicPerm)
+                size_t vec_size = gate.vec_size;
+                size_t total_inputs = gate.in.size();
+                                
+                size_t num_payloads = (total_inputs - vec_size) / vec_size;
+
+                // Read position map from first vec_size wires (reconstructed values)
+                std::vector<size_t> position_map(vec_size);
+                for (size_t i = 0; i < vec_size; ++i) {
+                    Ring pos_value = wires_[gate.in[i]];
+                    position_map[i] = static_cast<size_t>(pos_value);
+
+                }
+                std::cout << std::endl;
+                
+                
+              
+                // Apply permutation to each payload
+                for (size_t p = 0; p < num_payloads; ++p) {
+                    if (gate.inv == 0) {
+                        // Forward permutation: output[position_map[i]] = input[i]
+                        for (size_t i = 0; i < vec_size; ++i) {
+                            size_t idx_perm = position_map[i];
+                            
+                            size_t out_wire = gate.outs[vec_size * p + idx_perm];
+                            size_t in_wire = gate.in[vec_size * (p + 1) + i];
+                            
+                            wires_[out_wire] = wires_[in_wire];
+                        }
+                    } else {
+                        // Inverse permutation: output[i] = input[position_map[i]]
+                        for (size_t i = 0; i < vec_size; ++i) {
+                            size_t idx_perm = position_map[i];
+
+                            
+                            size_t out_wire = gate.outs[vec_size * p + i];
+                            size_t in_wire = gate.in[vec_size * (p + 1) + idx_perm];
+                                                                                    
+                            wires_[out_wire] = wires_[in_wire];
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     void OnlineEvaluator::evaluateGatesAtDepth(size_t depth) {
         if (id_ == 0) { return; }
 
@@ -1075,6 +1142,7 @@ namespace graphdb
         std::vector<common::utils::FIn1Gate> rec_gates;
         std::vector<common::utils::SIMDOGate> shuffle_gates;
         std::vector<common::utils::SIMDOGate> sort_gates;
+        std::vector<common::utils::SIMDOGate> public_perm_gates;
         std::vector<common::utils::SIMDOGate> rewire_gates;
         std::vector<common::utils::SIMDOGate> delete_gates;
 
@@ -1103,13 +1171,16 @@ namespace graphdb
                 }
                 case common::utils::GateType::kSort: {
                     auto *g = static_cast<common::utils::SIMDOGate *>(gate.get());
-                    // Sort gates are processed immediately
                     sort_gates.push_back(*g);
+                    break;
+                }
+                case common::utils::GateType::kPublicPerm: {
+                    auto *g = static_cast<common::utils::SIMDOGate *>(gate.get());
+                    public_perm_gates.push_back(*g);
                     break;
                 }
                 case common::utils::GateType::kRewire: {
                     auto *g = static_cast<common::utils::SIMDOGate *>(gate.get());
-                    // Rewire gates are processed immediately
                     rewire_gates.push_back(*g);
                     break;
                 }
@@ -1129,6 +1200,7 @@ namespace graphdb
         if (!rec_gates.empty()) { recEvaluate(rec_gates); }
         if (!shuffle_gates.empty()) { shuffleEvaluate(shuffle_gates); }
         if (!sort_gates.empty()) { sortEvaluate(sort_gates); }
+        if (!public_perm_gates.empty()) { publicPermEvaluate(public_perm_gates); }
         if (!rewire_gates.empty()) { rewireEvaluate(rewire_gates); }
         if (!delete_gates.empty()) { deleteWiresEvaluate(delete_gates); }
         
@@ -1159,33 +1231,7 @@ namespace graphdb
                     wires_[g->out] = wires_[g->in] * g->cval;
                     break;
                 }
-                case common::utils::GateType::kPublicPerm: {
-                    auto *g = static_cast<common::utils::SIMDOGate *>(gate.get());
-                    auto vec_len = g->in.size();
-                    
-                    for (int i = 0; i < vec_len; ++i) {
-                        std::cout << g->outs[i] << " ";
-                    }
-                    std::cout << std::endl;
-                    
-                    // First, read all inputs and compute permutation indices
-                    std::unordered_map<common::utils::wire_t, Ring> temp_outputs;
-                    for (int i = 0; i < vec_len; ++i) {
-                        auto idx_perm = g->permutation[0][i];
-                        if (idx_perm < 0) {
-                            common::utils::wire_t wire_id = static_cast<common::utils::wire_t>(-idx_perm - 1);
-                            Ring wire_value = wires_[wire_id];
-                            idx_perm = static_cast<int>(wire_value);
-                        }
-                        temp_outputs[g->outs[idx_perm]] = wires_[g->in[i]];
-                    }
-                    
-                    // Then, write all outputs at once
-                    for (const auto& [wire_id, value] : temp_outputs) {
-                        wires_[wire_id] = value;
-                    }
-                    break;
-                }
+
                 default:
                     break;
             }

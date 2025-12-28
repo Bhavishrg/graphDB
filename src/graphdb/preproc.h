@@ -119,17 +119,17 @@ struct PreprocSortGate : public PreprocGate<R> {
   PreprocSortGate() = default;
 };
 
-// Preprocessing for Rewire gate
-// Rewires gates based on a position map (provided as a public permutation)
-// Takes a position map vector and any number of payload vectors as input
-// Outputs permuted payload wires based on the position map
-// 
-// Gate behavior (similar to lines 678-690 in compactEvaluate):
-//   Apply public permutation to all payload vectors based on the position map
-//   For each position i: if position_map[i] = idx_perm, then output[idx_perm] = payload[i]
-//
-// This gate requires:
-//   - No preprocessing needed (permutation is public)
+
+template <class R>
+struct PreprocPublicPermGate : public PreprocGate<R> {
+  size_t vec_size;       // Size of position map and each payload vector
+  size_t num_payloads;   // Number of payload vectors
+  
+  PreprocPublicPermGate() = default;
+  PreprocPublicPermGate(size_t vec_size, size_t num_payloads)
+      : PreprocGate<R>(), vec_size(vec_size), num_payloads(num_payloads) {}
+};
+
 template <class R>
 struct PreprocRewireGate : public PreprocGate<R> {
   size_t vec_size;       // Size of position map and each payload vector

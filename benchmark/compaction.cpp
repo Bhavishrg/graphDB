@@ -346,3 +346,5 @@ int main(int argc, char* argv[]) {
     }
     return 0;
 }
+
+// usage: ../run.sh compaction --num-parties 2 --vec-size 5 --num-payloads 2

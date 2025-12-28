@@ -80,6 +80,8 @@ namespace graphdb {
 
     void sortEvaluate(const std::vector<common::utils::SIMDOGate> &sort_gates);
 
+    void publicPermEvaluate(const std::vector<common::utils::SIMDOGate> &public_perm_gates);
+
     void rewireEvaluate(const std::vector<common::utils::SIMDOGate> &rewire_gates);
 
     void deleteWiresEvaluate(const std::vector<common::utils::SIMDOGate> &delete_gates);

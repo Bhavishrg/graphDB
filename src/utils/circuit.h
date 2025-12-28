@@ -297,6 +297,82 @@ class Circuit {
     return output;
   }
 
+    // Rewire gate that applies a public permutation based on a position map
+  // Takes a position map vector and any number of payload vectors as input
+  // Outputs permuted payload wires based on the position map
+  // 
+  // For each position i: if position_map[i] = idx_perm, then output[idx_perm] = payload[i]
+  //
+  // Input format: [pos_map_0, ..., pos_map_n, p1_0, ..., p1_n, p2_0, ..., p2_n, ...]
+  // Output format: [p1_out_0, ..., p1_out_n, p2_out_0, ..., p2_out_n, ...]
+  std::vector<std::vector<wire_t>> addPublicPerm(
+      const std::vector<wire_t>& public_Perm,
+      const std::vector<std::vector<wire_t>>& payload_vectors,
+      int inv = 0) {
+    
+    size_t vec_size = public_Perm.size();
+    size_t num_payloads = payload_vectors.size();
+    
+    if (num_payloads == 0) {
+      throw std::invalid_argument("At least one payload vector is required.");
+    }
+    
+    // Validate all payload vectors have same size as public_perm
+    for (size_t p = 0; p < num_payloads; ++p) {
+      if (payload_vectors[p].size() != vec_size) {
+        throw std::invalid_argument("All payload vectors must have the same size as public_perm.");
+      }
+    }
+    
+    // Validate input wires
+    for (size_t i = 0; i < vec_size; i++) {
+      if (!isWireValid(public_Perm[i])) {
+        throw std::invalid_argument("Invalid wire ID in position_map.");
+      }
+      for (size_t p = 0; p < num_payloads; ++p) {
+        if (!isWireValid(payload_vectors[p][i])) {
+          throw std::invalid_argument("Invalid wire ID in payload vector.");
+        }
+      }
+    }
+    
+    // Create output wires: vec_size for each payload
+    std::vector<std::vector<wire_t>> payload_outputs(num_payloads, std::vector<wire_t>(vec_size));
+    
+    for (size_t p = 0; p < num_payloads; ++p) {
+      for (size_t i = 0; i < vec_size; i++) {
+        payload_outputs[p][i] = num_wires + vec_size * p + i;
+      }
+    }
+    
+    // Create input vector [pos_map_0, ..., pos_map_n, p1_0, ..., p1_n, p2_0, ...]
+    std::vector<wire_t> input((1 + num_payloads) * vec_size);
+    for (size_t i = 0; i < vec_size; i++) {
+      input[i] = public_Perm[i];
+    }
+    for (size_t p = 0; p < num_payloads; ++p) {
+      for (size_t i = 0; i < vec_size; i++) {
+        input[vec_size * (p + 1) + i] = payload_vectors[p][i];
+      }
+    }
+    
+    // Create output vector for the gate
+    std::vector<wire_t> output(num_payloads * vec_size);
+    for (size_t p = 0; p < num_payloads; ++p) {
+      for (size_t i = 0; i < vec_size; i++) {
+        output[vec_size * p + i] = payload_outputs[p][i];
+      }
+    }
+    
+    // Empty permutation vector since the permutation is determined at runtime from position_map
+    std::vector<std::vector<int>> empty_permutation;
+    // Pass vec_size and inv as metadata to the gate constructor
+    gates_.push_back(std::make_shared<SIMDOGate>(GateType::kPublicPerm, 0, input, output, empty_permutation, vec_size, inv));
+    num_wires += num_payloads * vec_size;
+    
+    return payload_outputs;
+  }
+
   // Rewire gate that applies a public permutation based on a position map
   // Takes a position map vector and any number of payload vectors as input
   // Outputs permuted payload wires based on the position map
@@ -962,6 +1038,102 @@ class Circuit {
     
     // Return first reconstructed label as keep_indices (single wire) and compacted payloads
     return {p_compacted};
+  }
+
+  // ============================================================================
+  // SUBCIRCUIT: Sorting
+  // ============================================================================
+  // Add a sorting subcircuit using iterative compaction.
+  //
+  // Input: 1. A vector of wires with dimension {vec_size * input_size}
+  //        2. A permutation matrix of size [num_parties][vec_size]
+  //
+  // Circuit Logic:
+  // 1. Group wires into input_size many groups as follows:
+  //    - Group 0: {wire[0], wire[input_size], wire[2*input_size], ...}
+  //    - Group 1: {wire[1], wire[input_size+1], wire[2*input_size+1], ...}
+  //    - Group i: {wire[i], wire[input_size+i], wire[2*input_size+i], ...}
+  //
+  // 2. Initialize index wires [1, 2, 3, ..., vec_size]
+  //
+  // 3. For input_size many iterations (outer loop):
+  //    - Take the corresponding group from the last iteration
+  //    - Apply compaction with all wires in groups 0 to current + index wires as payload
+  //    - Update all groups with compacted outputs
+  //
+  // 4. Output: index wires from the final iteration
+  //
+  std::vector<wire_t> addSortSubcircuit(
+      const std::vector<wire_t>& wires,
+      const std::vector<std::vector<int>>& permutation,
+      int pid) {
+    
+    // Validate inputs
+    if (permutation.size() == 0) {
+      throw std::invalid_argument("Permutation matrix is empty.");
+    }
+    
+    size_t vec_size = permutation[0].size();
+    
+    if (wires.size() % vec_size != 0) {
+      throw std::invalid_argument("Total number of wires must be divisible by vec_size.");
+    }
+    
+    size_t input_size = wires.size() / vec_size;
+    
+    // Validate all wires
+    for (size_t i = 0; i < wires.size(); ++i) {
+      if (!isWireValid(wires[i])) {
+        throw std::invalid_argument("Invalid wire ID in wires vector.");
+      }
+    }
+    
+    // Create initial zero wire
+    wire_t zero_wire = addGate(GateType::kSub, wires[0], wires[0]);
+    
+    // Step 1: Group wires into input_size groups
+    std::vector<std::vector<wire_t>> groups(input_size);
+    for (size_t i = 0; i < input_size; ++i) {
+      groups[i].resize(vec_size);
+      for (size_t j = 0; j < vec_size; ++j) {
+        groups[i][j] = wires[i + j * input_size];
+      }
+    }
+    
+    // Step 2: Initialize index wires [0, 1, 2, ..., vec_size-1]
+    std::vector<wire_t> sort_permutation(vec_size);
+    for (size_t i = 0; i < vec_size; ++i) {
+      sort_permutation[i] = addConstOpGate(GateType::kConstAdd, zero_wire, static_cast<R>(i));
+    }
+
+
+    // Step 3: Iterative compaction for input_size iterations
+    // Use int instead of size_t to avoid underflow when decrementing from 0
+    for (int iter = static_cast<int>(input_size) - 1; iter >= 0; --iter) {
+      // Take the current group (sorting key) from the last iteration
+      std::vector<wire_t>& current_key = groups[iter];
+      
+      // Prepare payload vectors: all groups from 0 to iter (inclusive) + index_wires
+      std::vector<std::vector<wire_t>> payloads;
+      
+      for (int g = 0; g <= iter; ++g) {
+        payloads.push_back(groups[g]);
+      }
+      payloads.push_back(sort_permutation);
+      
+      // Apply compaction with current_key as the sorting key
+      auto [key_compacted, payloads_compacted, labels] = addCompactionSubcircuit(current_key, payloads, permutation, pid);
+
+      // Update groups 0 to iter with compacted outputs
+      for (int g = 0; g <= iter; ++g) {
+        groups[g] = payloads_compacted[g];
+      }
+      
+      // Update index_wires with compacted indices
+      sort_permutation = payloads_compacted[iter + 1];
+    }   
+    
+    return sort_permutation;
   }
 
 

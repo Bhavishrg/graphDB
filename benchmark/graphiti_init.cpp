@@ -18,11 +18,18 @@ using namespace graphdb;
 using json = nlohmann::json;
 namespace bpo = boost::program_options;
 
-common::utils::Circuit<Ring> generateSortCircuit(int nP, int pid, size_t vec_size, size_t input_size) {
-
-    std::cout << "Generating sort circuit with vec_size=" << vec_size 
-              << ", input_size=" << input_size << std::endl;
-    std::cout << "Total wires: " << (vec_size * input_size) << std::endl;
+common::utils::Circuit<Ring> generateGraphitiInitCircuit(int nP, int pid, size_t num_verts, size_t num_edges) {
+    
+    // Calculate vec_size and input_size as specified
+    size_t vec_size = num_verts + num_edges;
+    size_t input_size = static_cast<size_t>(std::ceil(std::log2(num_verts * 10)));
+    
+    std::cout << "Generating Graphiti init circuit with:" << std::endl;
+    std::cout << "  num_verts=" << num_verts << std::endl;
+    std::cout << "  num_edges=" << num_edges << std::endl;
+    std::cout << "  vec_size=" << vec_size << " (num_verts + num_edges)" << std::endl;
+    std::cout << "  input_size=" << input_size << " (ceil(log_2(num_verts*10)))" << std::endl;
+    std::cout << "  Total wires: " << (vec_size * input_size) << std::endl;
     
     common::utils::Circuit<Ring> circ;
 
@@ -46,14 +53,26 @@ common::utils::Circuit<Ring> generateSortCircuit(int nP, int pid, size_t vec_siz
         }
     }
 
-    // Use the sort subcircuit
-    // Input wires are organized as: wire[i + j * input_size] for element j, component i
-    // This matches the grouping expected by addSortSubcircuit
-    auto sorted_indices = circ.addSortSubcircuit(input_wires, permutations, pid);
+    // Vertex_order to shuffleA
+    auto shuffleA = circ.addMGate(common::utils::GateType::kShuffle, input_wires, permutations);
+
+    // vertex_order to shuffleB
+    auto shuffleB = circ.addMGate(common::utils::GateType::kShuffle, input_wires, permutations);
+
+    // Two parallel sort subcircuits
+
+    // First sort subcircuit
+    auto sorted_indices_1 = circ.addSortSubcircuit(shuffleA, permutations, pid);
     
-    // Set outputs: sorted indices
-    for (size_t i = 0; i < sorted_indices.size(); ++i) {
-        circ.setAsOutput(sorted_indices[i]);
+    // Second parallel sort subcircuit (using same input wires)
+    auto sorted_indices_2 = circ.addSortSubcircuit(shuffleB, permutations, pid);
+    
+    // Set outputs: sorted indices from both sort gates
+    for (size_t i = 0; i < sorted_indices_1.size(); ++i) {
+        circ.setAsOutput(sorted_indices_1[i]);
+    }
+    for (size_t i = 0; i < sorted_indices_2.size(); ++i) {
+        circ.setAsOutput(sorted_indices_2[i]);
     }
 
     return circ;
@@ -68,8 +87,8 @@ void benchmark(const bpo::variables_map& opts) {
         save_file = opts["output"].as<std::string>();
     }
 
-    auto vec_size = opts["vec-size"].as<size_t>();
-    auto input_size = opts["input-size"].as<size_t>();
+    auto num_verts = opts["num-verts"].as<size_t>();
+    auto num_edges = opts["num-edges"].as<size_t>();
     auto nP = opts["num-parties"].as<int>();
     auto latency = opts["latency"].as<double>();
     auto pid = opts["pid"].as<size_t>();
@@ -79,11 +98,15 @@ void benchmark(const bpo::variables_map& opts) {
     auto port = opts["port"].as<int>();
     auto use_pking = opts["use-pking"].as<bool>();
 
+    // Calculate vec_size and input_size
+    size_t vec_size = num_verts + num_edges;
+    size_t input_size = static_cast<size_t>(std::ceil(std::log2(num_verts * 10)));
+
     omp_set_nested(1);
     if (nP < 10) { omp_set_num_threads(nP); }
     else { omp_set_num_threads(10); }
 
-    std::cout << "Starting sort benchmarks" << std::endl;
+    std::cout << "Starting Graphiti init benchmarks" << std::endl;
 
     std::string net_config = opts.count("net-config") ? opts["net-config"].as<std::string>() : "";
     std::shared_ptr<io::NetIOMP> network = createNetwork(pid, nP, latency, port,
@@ -91,13 +114,15 @@ void benchmark(const bpo::variables_map& opts) {
                                                           net_config);
 
     // Increase socket buffer sizes to prevent deadlocks with large messages
-    size_t expected_output_bytes = vec_size * sizeof(Ring);
+    size_t expected_output_bytes = vec_size * sizeof(Ring) * 2; // Two sort gates
     int buffer_size = std::max(128 * 1024 * 1024, 
                                 static_cast<int>(expected_output_bytes * (nP - 1) * 3));
     increaseSocketBuffers(network.get(), buffer_size);
 
     json output_data;
     output_data["details"] = {{"num_parties", nP},
+                              {"num_verts", num_verts},
+                              {"num_edges", num_edges},
                               {"vec_size", vec_size},
                               {"input_size", input_size},
                               {"total_wires", vec_size * input_size},
@@ -117,7 +142,7 @@ void benchmark(const bpo::variables_map& opts) {
     StatsPoint start(*network);
     network->sync();
 
-    auto circ = generateSortCircuit(nP, pid, vec_size, input_size).orderGatesByLevel();
+    auto circ = generateGraphitiInitCircuit(nP, pid, num_verts, num_edges).orderGatesByLevel();
     network->sync();
 
     std::cout << "--- Circuit ---" << std::endl;
@@ -199,21 +224,21 @@ void benchmark(const bpo::variables_map& opts) {
     network->sync();
     std::cout << "Number of outputs: " << outputs.size() << std::endl;
     
-    // Outputs: sorted indices [index_0, index_1, ..., index_{vec_size-1}]
-    std::vector<Ring> sorted_indices(vec_size);
+    // Outputs: two sets of sorted indices (from two parallel sort gates)
+    std::vector<Ring> sorted_indices_1(vec_size);
+    std::vector<Ring> sorted_indices_2(vec_size);
     
-    if (outputs.size() >= vec_size) {
+    if (outputs.size() >= 2 * vec_size) {
         for (size_t i = 0; i < vec_size; ++i) {
-            sorted_indices[i] = outputs[i];
+            sorted_indices_1[i] = outputs[i];
+            sorted_indices_2[i] = outputs[vec_size + i];
         }
     }
     
     // Print sorted output indices
-    // Print first 10 input elements
     std::cout << "\n=== INPUT VALUES (Party " << pid << ") ===" << std::endl;
-    std::cout << "Element | Components (binary) | Sort map" << std::endl;
-    std::cout << "--------|---------------------|---------" << std::endl;
-    // for (size_t c = 0; c < input_size; ++c) std::cout << "---";
+    std::cout << "Element | Components (binary) | Sort1 | Sort2" << std::endl;
+    std::cout << "--------|---------------------|-------|-------" << std::endl;
 
     for (size_t elem = 0; elem < std::min(static_cast<size_t>(10), vec_size); ++elem) {
         std::cout << std::setw(7) << elem << " | ";
@@ -221,8 +246,50 @@ void benchmark(const bpo::variables_map& opts) {
             std::cout << input_values[elem][comp];
             if (comp < input_size - 1) std::cout << " ";
         }
-        std::cout << std::setw(7) << sorted_indices[elem] << std::endl;
+        std::cout << " | " << std::setw(5) << sorted_indices_1[elem];
+        std::cout << " | " << std::setw(5) << sorted_indices_2[elem] << std::endl;
     }
+    
+    // Verify sorting for both sort gates
+    auto verify_sorting = [&](const std::vector<Ring>& sorted_indices) -> bool {
+        bool is_sorted = true;
+        for (size_t i = 1; i < vec_size; ++i) {
+            size_t idx_prev = static_cast<size_t>(sorted_indices[i-1]) - 1;
+            size_t idx_curr = static_cast<size_t>(sorted_indices[i]) - 1;
+            
+            if (idx_prev >= vec_size || idx_curr >= vec_size) {
+                is_sorted = false;
+                break;
+            }
+            
+            // Compare lexicographically (most significant bit first)
+            bool prev_less = false;
+            bool equal = true;
+            for (size_t comp = 0; comp < input_size; ++comp) {
+                if (input_values[idx_prev][comp] < input_values[idx_curr][comp]) {
+                    prev_less = true;
+                    equal = false;
+                    break;
+                } else if (input_values[idx_prev][comp] > input_values[idx_curr][comp]) {
+                    prev_less = false;
+                    equal = false;
+                    break;
+                }
+            }
+            
+            if (!prev_less && !equal) {
+                is_sorted = false;
+                break;
+            }
+        }
+        return is_sorted;
+    };
+    
+    bool sort1_verified = verify_sorting(sorted_indices_1);
+    bool sort2_verified = verify_sorting(sorted_indices_2);
+    
+    std::cout << "\nSort Gate 1 verification: " << (sort1_verified ? "PASSED ✓" : "FAILED ✗") << std::endl;
+    std::cout << "Sort Gate 2 verification: " << (sort2_verified ? "PASSED ✓" : "FAILED ✗") << std::endl;
     std::cout << std::endl;
     
     StatsPoint end(*network);
@@ -256,7 +323,9 @@ void benchmark(const bpo::variables_map& opts) {
     std::cout << std::endl;
 
     output_data["stats"] = {{"peak_virtual_memory", peakVirtualMemory()},
-                            {"peak_resident_set_size", peakResidentSetSize()}};
+                            {"peak_resident_set_size", peakResidentSetSize()},
+                            {"sort1_verified", sort1_verified},
+                            {"sort2_verified", sort2_verified}};
 
     std::cout << "--- Statistics ---" << std::endl;
     for (const auto& [key, value] : output_data["stats"].items()) {
@@ -273,8 +342,8 @@ bpo::options_description programOptions() {
     bpo::options_description desc("Following options are supported by config file too.");
     desc.add_options()
         ("num-parties,n", bpo::value<int>()->required(), "Number of parties.")
-        ("vec-size,v", bpo::value<size_t>()->required(), "Number of elements to sort.")
-        ("input-size,i", bpo::value<size_t>()->required(), "Number of binary components per element.")
+        ("num-verts", bpo::value<size_t>()->required(), "Number of vertices.")
+        ("num-edges", bpo::value<size_t>()->required(), "Number of edges.")
         ("latency,l", bpo::value<double>()->default_value(0.5), "Network latency in ms.")
         ("pid,p", bpo::value<size_t>()->required(), "Party ID.")
         ("threads,t", bpo::value<size_t>()->default_value(6), "Number of threads (recommended 6).")
@@ -290,7 +359,7 @@ bpo::options_description programOptions() {
 
 int main(int argc, char* argv[]) {
     auto prog_opts(programOptions());
-    bpo::options_description cmdline("Benchmark secure sort subcircuit.");
+    bpo::options_description cmdline("Benchmark Graphiti initialization circuit with two parallel sort gates.");
     cmdline.add(prog_opts);
     cmdline.add_options()(
       "config,c", bpo::value<std::string>(),
@@ -328,4 +397,4 @@ int main(int argc, char* argv[]) {
     }
     return 0;
 }
-// usage: ./../run.sh sort --num-parties 2 --vec-size 100 --input-size 8
+// usage: ./../run.sh graphiti_init --num-parties 2 --num-verts 100 --num-edges 200
