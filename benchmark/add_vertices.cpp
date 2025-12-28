@@ -451,7 +451,7 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
     auto sigv_d = circ.addSubCircPermList(sigd, {sigv}, permutation)[0];
 
     // Reorder back to vertex order
-    auto delta_v = circ.addSubCircPermList(sigv, {prop_delta}, permutation)[0];
+    auto delta_v = circ.addSubCircPermList(sigv_d, {prop_delta}, permutation)[0];
 
     // Update sigd; vector includes dummy values for first nV entries (corresponding to vertices)
     std::vector<wire_t> updated_edge_sigd_values(vec_size);

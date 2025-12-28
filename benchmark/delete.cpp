@@ -376,9 +376,9 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
         prefix_sum_d = circ.addGate(common::utils::GateType::kAdd, prefix_sum_d, del_d[i]);
     }
     payload_d[0] = updated_sigd; 
-    payload_d = circ.addSubCircPermList(sigs_to_sigv, payload_d, permutation);
+    payload_d = circ.addSubCircPermList(sigd_to_sigv, payload_d, permutation);
+    updated_sigd = payload_d[0];
 
-    // Missing isV?
     payload1.resize(7);
     payload1[0] = src;
     payload1[1] = dst;
