@@ -88,31 +88,10 @@ common::utils::Circuit<Ring> generateDeleteCircuit(int nP, int pid, size_t num_v
         }
     }
 
-    // Flatten daglist with deletion tags for compaction
-    std::vector<common::utils::wire_t> flat_daglist_fields;
-    for (size_t i = 0; i < vec_size; ++i) {
-        flat_daglist_fields.push_back(daglist_src[i]);
-        flat_daglist_fields.push_back(daglist_dst[i]);
-        flat_daglist_fields.push_back(daglist_isV[i]);
-        flat_daglist_fields.push_back(daglist_data[i]);
-        flat_daglist_fields.push_back(daglist_sigs[i]);
-        flat_daglist_fields.push_back(daglist_sigv[i]);
-        flat_daglist_fields.push_back(daglist_sigd[i]);
-    }
-
-    // Perform compaction: remove entries marked for deletion
-    std::vector<common::utils::wire_t> compacted_fields = 
-        circ.addSubCircCompaction(flat_daglist_fields, deletion_tags, 7);
-
-    // After compaction, we have fewer valid entries (vec_size - num_deletes approximately)
-    // Extract the compacted daglist for further processing
-    size_t remaining_entries = vec_size; // In practice this would be vec_size - num_deletes
-    
-    // For the remaining entries after deletion, perform two parallel sort subcircuits
-    // Generate identity permutation for preprocessing
+    // Generate identity permutation for compaction
     std::vector<std::vector<int>> permutations;
-    std::vector<int> identity_perm(remaining_entries);
-    for (size_t i = 0; i < remaining_entries; ++i) {
+    std::vector<int> identity_perm(vec_size);
+    for (size_t i = 0; i < vec_size; ++i) {
         identity_perm[i] = i;
     }
     permutations.push_back(identity_perm);
@@ -122,26 +101,69 @@ common::utils::Circuit<Ring> generateDeleteCircuit(int nP, int pid, size_t num_v
         }
     }
 
-    // Extract compacted src values for sorting
-    std::vector<common::utils::wire_t> compacted_src_values;
-    for (size_t i = 0; i < remaining_entries && i * 7 < compacted_fields.size(); ++i) {
-        compacted_src_values.push_back(compacted_fields[i * 7]);
+    // Prepare payload vectors for compaction (7 fields per entry)
+    std::vector<std::vector<common::utils::wire_t>> payload_vectors = {
+        daglist_src,
+        daglist_dst,
+        daglist_isV,
+        daglist_data,
+        daglist_sigs,
+        daglist_sigv,
+        daglist_sigd
+    };
+
+    // Perform compaction: remove entries marked for deletion
+    // Note: deletion_tags should be 1 for entries to KEEP, not delete (inverse of match)
+    // So we need to invert deletion_tags first
+    std::vector<common::utils::wire_t> keep_tags(vec_size);
+    auto one = circ.addConstOpGate(common::utils::GateType::kConstAdd, 
+                                     circ.addGate(common::utils::GateType::kSub, deletion_tags[0], deletion_tags[0]),
+                                     static_cast<Ring>(1));
+    for (size_t i = 0; i < vec_size; ++i) {
+        keep_tags[i] = circ.addGate(common::utils::GateType::kSub, one, deletion_tags[i]);
+    }
+
+    auto [tags_compacted, payloads_compacted, labels] = 
+        circ.addCompactionSubcircuit(keep_tags, payload_vectors, permutations, pid);
+
+    // After compaction, we have fewer valid entries (vec_size - num_deletes approximately)
+    // Extract the compacted daglist for further processing
+    size_t remaining_entries = vec_size; // In practice this would be vec_size - num_deletes
+    
+    // Extract compacted src values for sorting (from first payload)
+    std::vector<common::utils::wire_t> compacted_src_values = payloads_compacted[0];
+
+    // For the remaining entries after deletion, perform two parallel sort subcircuits
+    // Generate identity permutation for sorting
+    std::vector<std::vector<int>> sort_permutations;
+    std::vector<int> sort_identity_perm(remaining_entries);
+    for (size_t i = 0; i < remaining_entries; ++i) {
+        sort_identity_perm[i] = i;
+    }
+    sort_permutations.push_back(sort_identity_perm);
+    if (pid == 0) {
+        for (int i = 1; i < nP; ++i) {
+            sort_permutations.push_back(sort_identity_perm);
+        }
     }
 
     // First sort subcircuit on compacted daglist
     if (compacted_src_values.size() > 0) {
-        auto sorted_indices_1 = circ.addSortSubcircuit(compacted_src_values, permutations, pid);
+        auto sorted_indices_1 = circ.addSortSubcircuit(compacted_src_values, sort_permutations, pid);
         
         // Second parallel sort subcircuit (using same input)
-        auto sorted_indices_2 = circ.addSortSubcircuit(compacted_src_values, permutations, pid);
+        auto sorted_indices_2 = circ.addSortSubcircuit(compacted_src_values, sort_permutations, pid);
         
         // Set outputs: deletion tags + compacted fields + sorted indices from both sort gates
         for (size_t i = 0; i < vec_size; ++i) {
             circ.setAsOutput(deletion_tags[i]);
         }
         
-        for (const auto& field : compacted_fields) {
-            circ.setAsOutput(field);
+        // Output all compacted payload fields
+        for (const auto& payload : payloads_compacted) {
+            for (const auto& wire : payload) {
+                circ.setAsOutput(wire);
+            }
         }
         
         for (const auto& idx : sorted_indices_1) {
@@ -157,8 +179,11 @@ common::utils::Circuit<Ring> generateDeleteCircuit(int nP, int pid, size_t num_v
             circ.setAsOutput(deletion_tags[i]);
         }
         
-        for (const auto& field : compacted_fields) {
-            circ.setAsOutput(field);
+        // Output all compacted payload fields
+        for (const auto& payload : payloads_compacted) {
+            for (const auto& wire : payload) {
+                circ.setAsOutput(wire);
+            }
         }
     }
 

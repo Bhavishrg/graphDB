@@ -740,7 +740,6 @@ void benchmark(const bpo::variables_map& opts) {
 
     auto num_vert = opts["num-vert"].as<size_t>();
     auto num_edge = opts["num-edge"].as<size_t>();
-    auto num_inserts_ = opts["num-inserts"].as<size_t>();
     auto vec_size = num_vert + num_edge;
     auto nP = opts["num-parties"].as<int>();
     auto nC = opts["num-clients"].as<int>();
@@ -768,7 +767,6 @@ void benchmark(const bpo::variables_map& opts) {
                               {"num_clients", nC},
                               {"num_vert", num_vert},
                               {"num_edge", num_edge},
-                              {"num_inserts", num_inserts_},
                               {"operation", "insert_edges"},
                               {"latency (ms)", latency},
                               {"pid", pid},
@@ -790,8 +788,8 @@ void benchmark(const bpo::variables_map& opts) {
     std::cout << "============================\n" << std::endl;
     std::cout << "Generating random inputs " << std::endl;
     std::cout << "Generating scale-free graph with nV=" << nV << ", nE=" << nE << " (seed=" << seed << ")" << std::endl;
-    auto edges = generate_scale_free(nV, nE, seed);
-    std::cout << "Generated " << edges.size() << " edges" << std::endl;
+    auto edges = generate_scale_free(nV, 0, seed);
+    std::cout << "Generated " << nE << " edges" << std::endl;
     
     std::cout << "Building daglist..." << std::endl;
     auto daglist = build_daglist(nV, edges);
@@ -802,9 +800,7 @@ void benchmark(const bpo::variables_map& opts) {
     auto dist_daglist = distribute_daglist(daglist, nC);
     
     // Generate random edges to insert (insert 20% of current edges)
-    Ring num_inserts = static_cast<Ring>(num_inserts_);
-    std::cout << "Generating random edges to insert: " << num_inserts << " edges..." << std::endl;
-    dist_daglist = generate_random_edges_to_insert(dist_daglist, num_inserts, seed);
+    dist_daglist = generate_random_edges_to_insert(dist_daglist, nE, seed);
 
 
     StatsPoint start(*network);
@@ -1011,7 +1007,6 @@ bpo::options_description programOptions() {
         ("num-clients", bpo::value<int>()->default_value(2), "Number of parties.")
         ("num-vert", bpo::value<size_t>()->default_value(1000), "Number of vertices in the graph.")
         ("num-edge", bpo::value<size_t>()->default_value(4000), "Number of edges in the graph.")
-        ("num-inserts", bpo::value<size_t>(), "Number of edge insertions (default: num-edge * 0.2).")
         ("num-payloads", bpo::value<size_t>()->default_value(1), "Number of payload vectors.")
         ("latency,l", bpo::value<double>()->default_value(0.5), "Network latency in ms.")
         ("pid,p", bpo::value<size_t>()->required(), "Party ID.")
@@ -1054,12 +1049,6 @@ int main(int argc, char* argv[]) {
         if (!opts["localhost"].as<bool>() && (opts.count("net-config") == 0)) {
             throw std::runtime_error("Expected one of 'localhost' or 'net-config'");
         }
-        // Set default value for num-inserts if not provided
-        if (opts.count("num-inserts") == 0) {
-            size_t num_edge = opts["num-edge"].as<size_t>();
-            size_t default_inserts = static_cast<size_t>(num_edge * 0.2);
-            opts.insert(std::make_pair("num-inserts", bpo::variable_value(default_inserts, false)));
-        }
     } catch (const std::exception& ex) {
         std::cerr << ex.what() << std::endl;
         return 1;
@@ -1072,4 +1061,4 @@ int main(int argc, char* argv[]) {
     }
     return 0;
 }
-// usage: ./../run.sh add_edges --num-parties 2 --num-clients 2 --num-vert 1000 --num-edge 4000
+// usage: ./../run.sh grapharo_init --num-parties 2 --num-clients 2 --num-vert 1000 --num-edge 4000

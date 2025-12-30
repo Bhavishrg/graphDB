@@ -40,32 +40,44 @@ common::utils::Circuit<Ring> generateGraphitiInitCircuit(int nP, int pid, size_t
         input_wires[i] = circ.newInputWire();
     }
 
-    // Generate identity permutation for preprocessing
-    std::vector<std::vector<int>> permutations;
-    std::vector<int> identity_perm(vec_size);
-    for (size_t i = 0; i < vec_size; ++i) {
-        identity_perm[i] = i;
+    // Generate identity permutations
+    // - shuffle uses full wire vector size
+    // - sort subcircuits use logical vec_size elements
+    std::vector<std::vector<int>> permutations_shuffle;
+    std::vector<std::vector<int>> permutations_sort;
+
+    std::vector<int> identity_shuffle(input_wires.size());
+    for (size_t i = 0; i < input_wires.size(); ++i) {
+        identity_shuffle[i] = static_cast<int>(i);
     }
-    permutations.push_back(identity_perm);
+    permutations_shuffle.push_back(identity_shuffle);
+
+    std::vector<int> identity_sort(vec_size);
+    for (size_t i = 0; i < vec_size; ++i) {
+        identity_sort[i] = static_cast<int>(i);
+    }
+    permutations_sort.push_back(identity_sort);
+
     if (pid == 0) {
         for (int i = 1; i < nP; ++i) {
-            permutations.push_back(identity_perm);
+            permutations_shuffle.push_back(identity_shuffle);
+            permutations_sort.push_back(identity_sort);
         }
     }
 
     // Vertex_order to shuffleA
-    auto shuffleA = circ.addMGate(common::utils::GateType::kShuffle, input_wires, permutations);
+    auto shuffleA = circ.addMGate(common::utils::GateType::kShuffle, input_wires, permutations_shuffle);
 
     // vertex_order to shuffleB
-    auto shuffleB = circ.addMGate(common::utils::GateType::kShuffle, input_wires, permutations);
+    auto shuffleB = circ.addMGate(common::utils::GateType::kShuffle, input_wires, permutations_shuffle);
 
     // Two parallel sort subcircuits
 
     // First sort subcircuit
-    auto sorted_indices_1 = circ.addSortSubcircuit(shuffleA, permutations, pid);
+    auto sorted_indices_1 = circ.addSortSubcircuit(shuffleA, permutations_sort, pid);
     
     // Second parallel sort subcircuit (using same input wires)
-    auto sorted_indices_2 = circ.addSortSubcircuit(shuffleB, permutations, pid);
+    auto sorted_indices_2 = circ.addSortSubcircuit(shuffleB, permutations_sort, pid);
     
     // Set outputs: sorted indices from both sort gates
     for (size_t i = 0; i < sorted_indices_1.size(); ++i) {

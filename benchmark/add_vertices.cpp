@@ -132,78 +132,72 @@ void printOutputs(const std::vector<Ring>& outputs, const DistributedDaglist& di
     std::cout << "  ID | Src | Dst | isV | Data | sigs | sigv | sigd" << std::endl;
     std::cout << "  " << std::string(70, '-') << std::endl;
     
-    size_t output_idx = 0;
     int display_count = 0;
+    size_t output_idx = 0;
     
-    // Display existing vertices, then new vertices for each client
+    // Print per-client: existing vertices followed by new vertices
     for (int c = 0; c < nC && display_count < 10; ++c) {
-        // Existing vertices
+        // Existing vertices for client c
         size_t limit = std::min(static_cast<size_t>(dist_daglist.VSizes[c]), size_t(10 - display_count));
         for (size_t i = 0; i < limit && output_idx + 6 < outputs.size(); ++i) {
+            size_t idx = output_idx + i * 7;
             std::cout << "  " << std::setw(2) << display_count << " | "
-                      << std::setw(3) << outputs[output_idx + 0] << " | "
-                      << std::setw(3) << outputs[output_idx + 1] << " | "
-                      << std::setw(3) << outputs[output_idx + 2] << " | "
-                      << std::setw(4) << outputs[output_idx + 3] << " | "
-                      << std::setw(4) << outputs[output_idx + 4] << " | "
-                      << std::setw(4) << outputs[output_idx + 5] << " | "
-                      << std::setw(4) << outputs[output_idx + 6] << std::endl;
-            output_idx += 7;
+                      << std::setw(3) << outputs[idx + 0] << " | "
+                      << std::setw(3) << outputs[idx + 1] << " | "
+                      << std::setw(3) << outputs[idx + 2] << " | "
+                      << std::setw(4) << outputs[idx + 3] << " | "
+                      << std::setw(4) << outputs[idx + 4] << " | "
+                      << std::setw(4) << outputs[idx + 5] << " | "
+                      << std::setw(4) << outputs[idx + 6] << std::endl;
             display_count++;
         }
-        output_idx += (dist_daglist.VSizes[c] - limit) * 7;
-        
-        // New vertices
+        output_idx += dist_daglist.VSizes[c] * 7;
+
+        // New vertices for client c
         if (display_count < 10) {
             limit = std::min(dist_daglist.InsertV[c].size(), size_t(10 - display_count));
             for (size_t i = 0; i < limit && output_idx + 6 < outputs.size(); ++i) {
+                size_t idx = output_idx + i * 7;
                 std::cout << "  " << std::setw(2) << display_count << " | "
-                          << std::setw(3) << outputs[output_idx + 0] << " | "
-                          << std::setw(3) << outputs[output_idx + 1] << " | "
-                          << std::setw(3) << outputs[output_idx + 2] << " | "
-                          << std::setw(4) << outputs[output_idx + 3] << " | "
-                          << std::setw(4) << outputs[output_idx + 4] << " | "
-                          << std::setw(4) << outputs[output_idx + 5] << " | "
-                          << std::setw(4) << outputs[output_idx + 6] << " *NEW*" << std::endl;
-                output_idx += 7;
+                          << std::setw(3) << outputs[idx + 0] << " | "
+                          << std::setw(3) << outputs[idx + 1] << " | "
+                          << std::setw(3) << outputs[idx + 2] << " | "
+                          << std::setw(4) << outputs[idx + 3] << " | "
+                          << std::setw(4) << outputs[idx + 4] << " | "
+                          << std::setw(4) << outputs[idx + 5] << " | "
+                          << std::setw(4) << outputs[idx + 6] << " *NEW*" << std::endl;
                 display_count++;
             }
-            output_idx += (dist_daglist.InsertV[c].size() - limit) * 7;
-        } else {
-            output_idx += dist_daglist.InsertV[c].size() * 7;
         }
-        
-        // Skip edges for this client
-        output_idx += dist_daglist.ESizes[c] * 7;
+        output_idx += dist_daglist.InsertV[c].size() * 7;
     }
     
     std::cout << "\nUpdated Edges (up to first 10):" << std::endl;
     std::cout << "  ID | Src | Dst | isV | Data | sigs | sigv | sigd" << std::endl;
     std::cout << "  " << std::string(70, '-') << std::endl;
     
-    // Reset to start of outputs and iterate through clients for edges
-    output_idx = 0;
+    // Edges start after all vertex outputs
+    size_t edges_start = output_idx;
+    std::vector<size_t> edge_prefix(nC + 1, 0);
+    for (int c = 0; c < nC; ++c) {
+        edge_prefix[c + 1] = edge_prefix[c] + dist_daglist.ESizes[c] * 7;
+    }
     display_count = 0;
     for (int c = 0; c < nC && display_count < 10; ++c) {
-        // Skip vertices (existing + new) for this client
-        output_idx += dist_daglist.VSizes[c] * 7;
-        output_idx += dist_daglist.InsertV[c].size() * 7;
-        
-        // Now print edges
+        size_t base = edges_start + edge_prefix[c];
         size_t limit = std::min(static_cast<size_t>(dist_daglist.ESizes[c]), size_t(10 - display_count));
-        for (size_t i = 0; i < limit && output_idx + 6 < outputs.size(); ++i) {
+        for (size_t i = 0; i < limit && base + i * 7 + 6 < outputs.size(); ++i) {
+            size_t idx = base + i * 7;
             std::cout << "  " << std::setw(2) << display_count << " | "
-                      << std::setw(3) << outputs[output_idx + 0] << " | "
-                      << std::setw(3) << outputs[output_idx + 1] << " | "
-                      << std::setw(3) << outputs[output_idx + 2] << " | "
-                      << std::setw(4) << outputs[output_idx + 3] << " | "
-                      << std::setw(4) << outputs[output_idx + 4] << " | "
-                      << std::setw(4) << outputs[output_idx + 5] << " | "
-                      << std::setw(4) << outputs[output_idx + 6] << std::endl;
-            output_idx += 7;
+                      << std::setw(3) << outputs[idx + 0] << " | "
+                      << std::setw(3) << outputs[idx + 1] << " | "
+                      << std::setw(3) << outputs[idx + 2] << " | "
+                      << std::setw(4) << outputs[idx + 3] << " | "
+                      << std::setw(4) << outputs[idx + 4] << " | "
+                      << std::setw(4) << outputs[idx + 5] << " | "
+                      << std::setw(4) << outputs[idx + 6] << std::endl;
             display_count++;
         }
-        output_idx += (dist_daglist.ESizes[c] - limit) * 7;
     }
     
     std::cout << std::string(60, '=') << std::endl;
@@ -331,7 +325,16 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
     }
 
     // zero wire for assigning constant value to wire
-    auto zero_wire = circ.addGate(kSub, vertex_src_values[0][0], vertex_src_values[0][0]);
+    wire_t zero_wire;
+    if (nV > 0) {
+        zero_wire = circ.addGate(kSub, vertex_src_values[0][0], vertex_src_values[0][0]);
+    } else if (add_nV > 0) {
+        zero_wire = circ.addGate(kSub, new_vertex_src_values[0][0], new_vertex_src_values[0][0]);
+    } else {
+        // No vertices at all, create a dummy input wire and zero it
+        auto dummy = circ.newInputWire();
+        zero_wire = circ.addGate(kSub, dummy, dummy);
+    }
 
     // Compute per-client delta values (prefix sums of new vertices)
     std::vector<size_t> delta(nC);
@@ -365,32 +368,43 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
     }
     
     // Assign positions to new vertices
+    wire_t prev_sigv_wire = zero_wire;
+    wire_t prev_sigd_wire = zero_wire;
     for (int i = 0; i < nC; ++i) {
         new_vertex_sigs_values[i].resize(add_VSizes[i]);
         new_vertex_sigv_values[i].resize(add_VSizes[i]);
         new_vertex_sigd_values[i].resize(add_VSizes[i]);
 
+        if (VSizes[i] > 0) {
+            prev_sigv_wire = updated_vertex_sigv_values[i][VSizes[i]-1];
+            prev_sigd_wire = updated_vertex_sigd_values[i][VSizes[i]-1];
+        }
+
         for (int k = 0; k < add_VSizes[i]; ++k) {
+            
             new_vertex_sigv_values[i][k] = 
                 circ.addConstOpGate(common::utils::GateType::kConstAdd, 
-                                    updated_vertex_sigv_values[i][VSizes[i]-1], Ring(k+1));
+                                    prev_sigv_wire, Ring(k+1));
             new_vertex_sigd_values[i][k] = 
                 circ.addConstOpGate(common::utils::GateType::kConstAdd, 
-                                    updated_vertex_sigd_values[i][VSizes[i]-1], Ring(k+1));
-        }   
+                                    prev_sigd_wire, Ring(k+1));
+        
+        }        
     }
 
-    for (int i = 0; i < nC - 1; ++i) {
-        for (int k = 0; k < add_VSizes[i]; ++k) {
-            new_vertex_sigs_values[i][k] = 
-                circ.addConstOpGate(common::utils::GateType::kConstAdd, 
-                                    updated_vertex_sigs_values[i+1][0], Ring(k*-1 - 1));
-        } 
-    }
-    for (int k = 0; k < add_VSizes[nC - 1]; ++k) {
-        new_vertex_sigs_values[nC - 1][k] = 
-                circ.addConstOpGate(common::utils::GateType::kConstAdd, 
-                                    zero_wire, Ring(vec_size + delta[nC - 1] + k + 1));
+
+    wire_t next_sigs_wire = zero_wire;
+    next_sigs_wire = circ.addConstOpGate(common::utils::GateType::kConstAdd, zero_wire, Ring(vec_size + add_nV));
+    for (int i = nC-1; i >= 0; --i) {
+        for (int k = add_VSizes[i]; k >= 0; --k) {
+                new_vertex_sigs_values[i][k] = 
+                    circ.addConstOpGate(common::utils::GateType::kConstAdd, 
+                                        next_sigs_wire, Ring(k*-1 -1));
+        }
+
+        if (VSizes[i] > 0) {
+            next_sigs_wire = updated_vertex_sigs_values[i][0];
+        }
     }
 
     // Assign positions of edges
@@ -406,7 +420,7 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
     for (size_t i = 0; i < nC; ++i) {
         for (size_t j = 0; j < ESizes[i]; ++j) {
             // Initialize wires to zero
-            delta_wires[index] = circ.addGate(common::utils::GateType::kSub, vertex_src_values[0][0], vertex_src_values[0][0]);
+            delta_wires[index] = zero_wire;
             index++;
         }
     }
@@ -444,14 +458,29 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
         }
     }
 
-    // Propagate
-    auto prop_delta = circ.addSubCircPropagate(sigd, delta_wires, nV, permutation, true);
+    // Propagate (only if there are existing vertices/edges)
+    std::vector<wire_t> prop_delta, sigv_d, delta_v;
+    if (vec_size > 0) {
+        if (nE > 0) {
+            prop_delta = circ.addSubCircPropagate(sigd, delta_wires, nV, permutation, true);
 
-    // Reorder sigv to destination order
-    auto sigv_d = circ.addSubCircPermList(sigd, {sigv}, permutation)[0];
+            // Reorder sigv to destination order
+            sigv_d = circ.addSubCircPermList(sigd, {sigv}, permutation)[0];
 
-    // Reorder back to vertex order
-    auto delta_v = circ.addSubCircPermList(sigv_d, {prop_delta}, permutation)[0];
+            // Reorder back to vertex order
+            delta_v = circ.addSubCircPermList(sigv_d, {prop_delta}, permutation)[0];
+        } else {
+            // No edges, so propagation is identity
+            prop_delta = delta_wires;
+            sigv_d = sigv;
+            delta_v = delta_wires;
+        }
+    } else {
+        // No existing graph elements, create empty vectors
+        prop_delta.resize(0);
+        sigv_d.resize(0);
+        delta_v.resize(0);
+    }
 
     // Update sigd; vector includes dummy values for first nV entries (corresponding to vertices)
     std::vector<wire_t> updated_edge_sigd_values(vec_size);
@@ -473,7 +502,7 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
                                     edge_sigs_values[i][k], delta[i]);
             updated_edge_sigv_values[i][k] = 
                 circ.addConstOpGate(common::utils::GateType::kConstAdd, 
-                                    edge_sigv_values[i][k], delta[i]);
+                                    edge_sigv_values[i][k], add_nV);
         }
     }
 
@@ -711,8 +740,8 @@ void benchmark(const bpo::variables_map& opts) {
     StatsPoint online_start(*network);
     for (size_t i = 0; i < circ.gates_by_level.size(); ++i) {
         eval.evaluateGatesAtDepth(i);
-        network->sync();
-        network->flush();
+        // network->sync();
+        // network->flush();
     }
     network->sync();
     StatsPoint online_end(*network);

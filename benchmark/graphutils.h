@@ -284,6 +284,11 @@ inline Daglist build_daglist(Ring nV, const vector<pair<Ring, Ring>>& edges) {
   Ring nE = edges.size();
   Ring total = nV + nE;
 
+  // Handle empty graph case
+  if (total == 0) {
+    return Daglist();
+  }
+
   // Build in vertex order: vertices, then edges grouped by source
   vector<DagEntry> entries;
   entries.reserve(total);
@@ -423,12 +428,14 @@ inline DistributedDaglist distribute_daglist(const Daglist& daglist_graph, int n
   if (np <= 0) {
     throw std::invalid_argument("Number of parties must be positive");
   }
-  if (daglist_graph.empty()) {
-    return DistributedDaglist(np, 0, 0);
-  }
-
+  
   Ring nV = daglist_graph.nV;
   Ring nE = daglist_graph.nE;
+  
+  // Handle empty graph case
+  if (nV == 0 && nE == 0) {
+    return DistributedDaglist(np, 0, 0);
+  }
 
   if (nV == 0) {
     return DistributedDaglist(np, 0, nE);
@@ -749,7 +756,6 @@ inline DistributedDaglist generate_random_vertices_to_insert(const DistributedDa
   }
   
   std::mt19937_64 rng(seed);
-  std::uniform_int_distribution<Ring> vertex_id_dist(0, dist_daglist.nV - 1);
   std::uniform_int_distribution<Ring> data_dist(1, 1000);
   
   // Distribute num_inserts across clients proportionally to their current vertex sizes
@@ -772,6 +778,9 @@ inline DistributedDaglist generate_random_vertices_to_insert(const DistributedDa
   // Distribute any remaining vertices to the first client
   if (remaining > 0 && result.num_clients > 0) {
     inserts_per_client[0] += remaining;
+  } else if (remaining > 0 && result.num_clients == 0) {
+    // No clients available - shouldn't happen in normal usage
+    throw std::runtime_error("Cannot insert vertices - no clients available");
   }
   
   // Generate random vertex entries for each client
@@ -821,7 +830,8 @@ inline DistributedDaglist generate_random_edges_to_insert(const DistributedDagli
     result.InsertE[c].clear();
   }
   
-  if (num_inserts == 0) {
+  if (num_inserts == 0 || dist_daglist.nV == 0) {
+    // Cannot insert edges if no vertices exist
     return result;
   }
   

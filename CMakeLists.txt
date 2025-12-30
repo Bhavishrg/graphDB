@@ -31,6 +31,7 @@ endif()
 
 add_subdirectory(src)
 add_subdirectory(benchmark)
+add_subdirectory(test_primitives)
 
 enable_testing()
 # add_subdirectory(test)
