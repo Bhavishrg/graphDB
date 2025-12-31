@@ -18,6 +18,7 @@ add_benchmark(naive_add_edges)
 add_benchmark(add_edges)
 add_benchmark(graphiti_init)
 add_benchmark(grapharo_init)
+add_benchmark(graphiti_init_micro_benchmark)
 add_benchmark(naive_data_change)
 add_benchmark(naive_delete)
 
