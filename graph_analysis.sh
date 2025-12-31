@@ -33,7 +33,7 @@ run_benchmark() {
 
 echo "Starting graph analysis benchmarks"
 
-run_benchmark graphiti_init_micro_benchmark
+run_benchmark graphiti_init
 run_benchmark grapharo_init
 
 # Run grapharo_init with varying client counts
