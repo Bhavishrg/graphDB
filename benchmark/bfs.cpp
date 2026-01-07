@@ -118,8 +118,9 @@ void benchmark(const bpo::variables_map& opts) {
     }
 
     auto nP = opts["num-parties"].as<int>();
-    auto vec_size = opts["vec-size"].as<size_t>();
-    auto num_verts = opts.count("num-verts") ? opts["num-verts"].as<size_t>() : vec_size / 10;
+    auto num_verts = opts["num-vert"].as<size_t>();
+    auto num_edges = opts["num-edge"].as<size_t>();
+    auto vec_size = num_verts + num_edges;
     auto iterations = opts["iterations"].as<int>();
     auto latency = opts["latency"].as<double>();
     auto pid = opts["pid"].as<size_t>();
@@ -128,38 +129,53 @@ void benchmark(const bpo::variables_map& opts) {
     auto repeat = opts["repeat"].as<size_t>();
     auto port = opts["port"].as<int>();
     auto use_pking = opts["use-pking"].as<bool>();
+    auto random_inputs = opts["random-inputs"].as<bool>();
 
-    // Generate graph directly using num_verts
+    // Generate graph directly using num_verts and num_edges
     Ring nV = static_cast<Ring>(num_verts);
-    Ring nE = vec_size - nV;
+    Ring nE = static_cast<Ring>(num_edges);
     
-    std::cout << "Generating scale-free graph with nV=" << nV << ", nE=" << nE << std::endl;
-    auto edges = generate_scale_free(nV, nE);
-    std::cout << "Generated " << edges.size() << " edges" << std::endl;
+    Daglist daglist;
     
-    std::cout << "Building daglist..." << std::endl;
-    auto daglist = build_daglist(nV, edges);
-    std::cout << "Built daglist with " << daglist.size() << " entries" << std::endl;
+    if (!random_inputs) {
+        std::cout << "============================\n" << std::endl;
+        std::cout << "Generating random inputs" << std::endl;
+        std::cout << "Generating scale-free graph with nV=" << nV << ", nE=" << nE << " (seed=" << seed << ")" << std::endl;
+        auto edges = generate_scale_free(nV, nE, seed);
+        std::cout << "Generated " << edges.size() << " edges" << std::endl;
+        
+        std::cout << "Building daglist..." << std::endl;
+        daglist = build_daglist(nV, edges);
+        std::cout << "Built daglist with " << daglist.size() << " entries" << std::endl;
+        
+        // Update vec_size to match actual graph size
+        vec_size = daglist.size();
+    } else {
+        std::cout << "============================\n" << std::endl;
+        std::cout << "Using random inputs" << std::endl;
+        // daglist will remain empty, inputs will be set randomly
+    }
 
     // Print first 10 daglist entries
-    std::cout << "\n=== First 10 Daglist Entries ===" << std::endl;
-    size_t print_count = std::min(static_cast<size_t>(10), daglist.size());
-    for (size_t i = 0; i < print_count; ++i) {
-        const auto& entry = daglist.entries[i];
-        std::cout << "Entry " << i << ": "
-                  << "src=" << entry.src << ", "
-                  << "dst=" << entry.dst << ", "
-                  << "isV=" << entry.isV << ", "
-                  << "data=" << entry.data << ", "
-                  << "sigs=" << entry.sigs << ", "
-                  << "sigv=" << entry.sigv << ", "
-                  << "sigd=" << entry.sigd << std::endl;
+    if (!random_inputs) {
+        std::cout << "\n=== First 10 Daglist Entries ===" << std::endl;
+        size_t print_count = std::min(static_cast<size_t>(10), daglist.size());
+        for (size_t i = 0; i < print_count; ++i) {
+            const auto& entry = daglist.entries[i];
+            std::cout << "Entry " << i << ": "
+                      << "src=" << entry.src << ", "
+                      << "dst=" << entry.dst << ", "
+                      << "isV=" << entry.isV << ", "
+                      << "data=" << entry.data << ", "
+                      << "sigs=" << entry.sigs << ", "
+                      << "sigv=" << entry.sigv << ", "
+                      << "sigd=" << entry.sigd << std::endl;
+        }
+        std::cout << "================================\n" << std::endl;
     }
-    std::cout << "================================\n" << std::endl;
 
-    // Update vec_size to match actual graph size
-    vec_size = daglist.size();
     std::cout << "Number of vertices: " << num_verts << std::endl;
+    std::cout << "Vector size: " << vec_size << std::endl;
 
     omp_set_nested(1);
     if (nP < 10) { omp_set_num_threads(nP); }
@@ -178,13 +194,14 @@ void benchmark(const bpo::variables_map& opts) {
     output_data["details"] = {{"num_parties", nP},
                               {"vec_size", vec_size},
                               {"num_vertices", num_verts},
-                              {"num_edges", edges.size()},
+                              {"num_edges", num_edges},
                               {"iterations", iterations},
                               {"latency (ms)", latency},
                               {"pid", pid},
                               {"threads", threads},
                               {"seed", seed},
-                              {"repeat", repeat}};
+                              {"repeat", repeat},
+                              {"random_inputs", random_inputs}};
     output_data["benchmarks"] = json::array();
 
     std::cout << "--- Details ---" << std::endl;
@@ -232,22 +249,27 @@ void benchmark(const bpo::variables_map& opts) {
     }
     std::sort(input_wires.begin(), input_wires.end());
 
-    if (!input_wires.empty()) {
-        std::cout << "\n=== SETTING BFS INPUTS FROM GENERATED GRAPH ===" << std::endl;
-        std::cout << "Party " << pid << " setting inputs:" << std::endl;
-        
-        // Optionally modify daglist data before setting inputs (e.g., set starting vertex)
-        // daglist.entries[0].data = 1;  // Set starting vertex data to 1
-        
-        // Use the helper function to set all daglist inputs
-        set_daglist_inputs(daglist, input_wires, inputs);
-        
-        std::cout << "  Set " << (7 * vec_size) << " input values (7 fields × " << vec_size << " entries)" << std::endl;
-        std::cout << "  BFS iterations: " << iterations << std::endl;
-        std::cout << "=======================================\n" << std::endl;
+    if (random_inputs) {
+        // Use random inputs for benchmarking
+        std::cout << "Using random inputs for party " << pid << std::endl;
+        eval.setRandomInputs();
+    } else {
+        if (!input_wires.empty()) {
+            std::cout << "\n=== SETTING BFS INPUTS FROM GENERATED GRAPH ===" << std::endl;
+            std::cout << "Party " << pid << " setting inputs:" << std::endl;
+            
+            // Optionally modify daglist data before setting inputs (e.g., set starting vertex)
+            // daglist.entries[0].data = 1;  // Set starting vertex data to 1
+            
+            // Use the helper function to set all daglist inputs
+            set_daglist_inputs(daglist, input_wires, inputs);
+            
+            std::cout << "  Set " << (7 * vec_size) << " input values (7 fields × " << vec_size << " entries)" << std::endl;
+            std::cout << "  BFS iterations: " << iterations << std::endl;
+            std::cout << "=======================================\n" << std::endl;
+        }
+        eval.setInputs(inputs);
     }
-
-    eval.setInputs(inputs);
     
     std::cout << "Starting online evaluation (BFS)" << std::endl;
     StatsPoint online_start(*network);
@@ -326,8 +348,8 @@ bpo::options_description programOptions() {
     bpo::options_description desc("Following options are supported by config file too.");
     desc.add_options()
         ("num-parties,n", bpo::value<int>()->required(), "Number of parties.")
-        ("vec-size,v", bpo::value<size_t>()->required(), "Approximate size of graph (total entries).")
-        ("num-verts", bpo::value<size_t>(), "Number of vertices in the graph (default: vec-size/10).")
+        ("num-vert", bpo::value<size_t>()->default_value(1000), "Number of vertices in the graph.")
+        ("num-edge", bpo::value<size_t>()->default_value(4000), "Number of edges in the graph.")
         ("iterations,i", bpo::value<int>()->required(), "Number of BFS iterations (propagate + gather).")
         ("latency,l", bpo::value<double>()->default_value(0.5), "Network latency in ms.")
         ("pid,p", bpo::value<size_t>()->required(), "Party ID.")
@@ -338,6 +360,7 @@ bpo::options_description programOptions() {
         ("port", bpo::value<int>()->default_value(10000), "Base port for networking.")
         ("output,o", bpo::value<std::string>(), "File to save benchmarks.")
         ("repeat,r", bpo::value<size_t>()->default_value(1), "Number of times to run benchmarks.")
+        ("random-inputs", bpo::value<bool>()->default_value(false), "Use random inputs for benchmarking.")
         ("use-pking", bpo::value<bool>()->default_value(true), "Use king party for reconstruction (true) or direct reconstruction (false).");
   return desc;
 }
@@ -384,4 +407,4 @@ int main(int argc, char* argv[]) {
     return 0;
 }
 
-// usage: ./../run.sh bfs --num-parties 2 -vec-size 10000 --num-vert 1000
+// usage: ./../run.sh bfs --num-parties 2 --num-vert 1000 --num-edge 4000 --iterations 3 --random-inputs 1

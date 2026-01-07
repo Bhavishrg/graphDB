@@ -160,6 +160,13 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
 
     common::utils::Circuit<Ring> circ; 
 
+    // Reserve capacity for wire vectors upfront
+    size_t total_vertex_wires = 0, total_edge_wires = 0;
+    for (int i = 0; i < nC; ++i) {
+        total_vertex_wires += VSizes[i];
+        total_edge_wires += ESizes[i];
+    }
+
     // Initialize all daglist field values
     std::vector<std::vector<wire_t>> vertex_src_values(nC);
     std::vector<std::vector<wire_t>> vertex_dst_values(nC);
@@ -220,23 +227,23 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
             subg_edge_deleted[j] = circ.newInputWire();
         }
 
-        vertex_src_values[i] = subg_vertex_src_values;
-        vertex_dst_values[i] = subg_vertex_dst_values;
-        vertex_isV_values[i] = subg_vertex_isV_values;
-        vertex_data_values[i] = subg_vertex_data_values;
-        vertex_sigs_values[i] = subg_vertex_sigs_values;
-        vertex_sigv_values[i] = subg_vertex_sigv_values;
-        vertex_sigd_values[i] = subg_vertex_sigd_values;
-        vertex_deleted[i] = subg_vertex_deleted;
+        vertex_src_values[i] = std::move(subg_vertex_src_values);
+        vertex_dst_values[i] = std::move(subg_vertex_dst_values);
+        vertex_isV_values[i] = std::move(subg_vertex_isV_values);
+        vertex_data_values[i] = std::move(subg_vertex_data_values);
+        vertex_sigs_values[i] = std::move(subg_vertex_sigs_values);
+        vertex_sigv_values[i] = std::move(subg_vertex_sigv_values);
+        vertex_sigd_values[i] = std::move(subg_vertex_sigd_values);
+        vertex_deleted[i] = std::move(subg_vertex_deleted);
 
-        edge_src_values[i] = subg_edge_src_values;
-        edge_dst_values[i] = subg_edge_dst_values;
-        edge_isV_values[i] = subg_edge_isV_values;
-        edge_data_values[i] = subg_edge_data_values;
-        edge_sigs_values[i] = subg_edge_sigs_values;
-        edge_sigv_values[i] = subg_edge_sigv_values;
-        edge_sigd_values[i] = subg_edge_sigd_values;
-        edge_deleted[i] = subg_edge_deleted;
+        edge_src_values[i] = std::move(subg_edge_src_values);
+        edge_dst_values[i] = std::move(subg_edge_dst_values);
+        edge_isV_values[i] = std::move(subg_edge_isV_values);
+        edge_data_values[i] = std::move(subg_edge_data_values);
+        edge_sigs_values[i] = std::move(subg_edge_sigs_values);
+        edge_sigv_values[i] = std::move(subg_edge_sigv_values);
+        edge_sigd_values[i] = std::move(subg_edge_sigd_values);
+        edge_deleted[i] = std::move(subg_edge_deleted);
     
     }
 
@@ -247,58 +254,97 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
         base_perm[i] = static_cast<int>(i);
     }
     std::vector<std::vector<int>> permutation;
-    permutation.push_back(base_perm);
-    if (pid == 0) {
-        for (int i = 1; i < nP; ++i) {
-            permutation.push_back(base_perm);
-        }
+    for (int i = 0; i < nP; ++i) {
+        permutation.push_back(base_perm);
     }
 
     // Generate flat daglist
     auto zerowire = circ.addGate(kSub, vertex_src_values[0][0], vertex_src_values[0][0]);
-    std::vector<wire_t> src(nV + nE);
-    std::vector<wire_t> dst(nV + nE);
-    std::vector<wire_t> isV(nV + nE);
-    std::vector<wire_t> data(nV + nE);
-    std::vector<wire_t> sigs(nV + nE);
-    std::vector<wire_t> sigv(nV + nE);
-    std::vector<wire_t> sigd(nV + nE);
-    std::vector<wire_t> del_v(nV + nE);
-    std::vector<wire_t> del_e(nV + nE);
-
-    int index = 0;
+    std::vector<wire_t> src;
+    std::vector<wire_t> dst;
+    std::vector<wire_t> isV;
+    std::vector<wire_t> data;
+    std::vector<wire_t> sigs;
+    std::vector<wire_t> sigv;
+    std::vector<wire_t> sigd;
+    std::vector<wire_t> del_v;
+    std::vector<wire_t> del_e;
+    
+    // Reserve capacity to avoid reallocations
+    src.reserve(nV + nE);
+    dst.reserve(nV + nE);
+    isV.reserve(nV + nE);
+    data.reserve(nV + nE);
+    sigs.reserve(nV + nE);
+    sigv.reserve(nV + nE);
+    sigd.reserve(nV + nE);
+    del_v.reserve(nV + nE);
+    del_e.reserve(nV + nE);
     
     // First, push all vertices from all clients
     for (int i = 0; i < nC; ++i) {
         for (int j = 0; j < VSizes[i]; ++j) {
-            src[index] = vertex_src_values[i][j];
-            dst[index] = vertex_dst_values[i][j];
-            isV[index] = vertex_isV_values[i][j];
-            data[index] = vertex_data_values[i][j];
-            sigs[index] = vertex_sigs_values[i][j];
-            sigv[index] = vertex_sigv_values[i][j];
-            sigd[index] = vertex_sigd_values[i][j];
-            del_v[index] = vertex_deleted[i][j];
-            del_e[index] = zerowire;
-            index++;
+            src.push_back(vertex_src_values[i][j]);
+            dst.push_back(vertex_dst_values[i][j]);
+            isV.push_back(vertex_isV_values[i][j]);
+            data.push_back(vertex_data_values[i][j]);
+            sigs.push_back(vertex_sigs_values[i][j]);
+            sigv.push_back(vertex_sigv_values[i][j]);
+            sigd.push_back(vertex_sigd_values[i][j]);
+            del_v.push_back(vertex_deleted[i][j]);
+            del_e.push_back(zerowire);
         }
     }
     
     // Then, push all edges from all clients
     for (int i = 0; i < nC; ++i) {
         for (int j = 0; j < ESizes[i]; ++j) {
-            src[index] = edge_src_values[i][j];
-            dst[index] = edge_dst_values[i][j];
-            isV[index] = edge_isV_values[i][j];
-            data[index] = edge_data_values[i][j];
-            sigs[index] = edge_sigs_values[i][j];
-            sigv[index] = edge_sigv_values[i][j];
-            sigd[index] = edge_sigd_values[i][j];
-            del_v[index] = zerowire;
-            del_e[index] = edge_deleted[i][j];
-            index++;
+            src.push_back(edge_src_values[i][j]);
+            dst.push_back(edge_dst_values[i][j]);
+            isV.push_back(edge_isV_values[i][j]);
+            data.push_back(edge_data_values[i][j]);
+            sigs.push_back(edge_sigs_values[i][j]);
+            sigv.push_back(edge_sigv_values[i][j]);
+            sigd.push_back(edge_sigd_values[i][j]);
+            del_v.push_back(zerowire);
+            del_e.push_back(edge_deleted[i][j]);
         }
     }
+    
+    // Clear intermediate vectors to free memory
+    vertex_src_values.clear();
+    vertex_src_values.shrink_to_fit();
+    vertex_dst_values.clear();
+    vertex_dst_values.shrink_to_fit();
+    vertex_isV_values.clear();
+    vertex_isV_values.shrink_to_fit();
+    vertex_data_values.clear();
+    vertex_data_values.shrink_to_fit();
+    vertex_sigs_values.clear();
+    vertex_sigs_values.shrink_to_fit();
+    vertex_sigv_values.clear();
+    vertex_sigv_values.shrink_to_fit();
+    vertex_sigd_values.clear();
+    vertex_sigd_values.shrink_to_fit();
+    vertex_deleted.clear();
+    vertex_deleted.shrink_to_fit();
+    
+    edge_src_values.clear();
+    edge_src_values.shrink_to_fit();
+    edge_dst_values.clear();
+    edge_dst_values.shrink_to_fit();
+    edge_isV_values.clear();
+    edge_isV_values.shrink_to_fit();
+    edge_data_values.clear();
+    edge_data_values.shrink_to_fit();
+    edge_sigs_values.clear();
+    edge_sigs_values.shrink_to_fit();
+    edge_sigv_values.clear();
+    edge_sigv_values.shrink_to_fit();
+    edge_sigd_values.clear();
+    edge_sigd_values.shrink_to_fit();
+    edge_deleted.clear();
+    edge_deleted.shrink_to_fit();
 
     // Propagate del tag to outgoing edges and reorder them back to vertex order
     auto del_S = circ.addSubCircPropagate(sigs, del_v, nV, permutation);
@@ -325,11 +371,12 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
     }
 
     // // Update sigv
-    std::vector<wire_t> updated_sigv(vec_size);
-    updated_sigv[0] = sigv[0];
+    std::vector<wire_t> updated_sigv;
+    updated_sigv.reserve(vec_size);
+    updated_sigv.push_back(sigv[0]);
     wire_t prefix_sum = del_final[0];
     for (size_t i = 1; i < vec_size; ++i) {
-        updated_sigv[i] = circ.addGate(common::utils::GateType::kSub, sigv[i], prefix_sum);
+        updated_sigv.push_back(circ.addGate(common::utils::GateType::kSub, sigv[i], prefix_sum));
         prefix_sum = circ.addGate(common::utils::GateType::kAdd, prefix_sum, del_final[i]);
     }
 
@@ -345,48 +392,56 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
     payload2.push_back(del_final);
 
     // // Reorder to source order and destination order
-    auto payload_s = circ.addSubCircPermList(sigs, payload1, permutation);
-    auto payload_d = circ.addSubCircPermList(sigd, payload2, permutation);
+    auto payload_s = circ.addSubCircPermList(payload1[0], payload1, permutation);
+    auto payload_d = circ.addSubCircPermList(payload2[0], payload2, permutation);
 
     // // Update sigs
-    std::vector<wire_t> updated_sigs(vec_size);
-    std::vector<wire_t> sigs_old = payload_s[0];
-    std::vector<wire_t> del_s = payload_s[1];
+    std::vector<wire_t> updated_sigs;
+    updated_sigs.reserve(vec_size);
+    auto& sigs_old = payload_s[0];
+    auto& del_s = payload_s[1];
     wire_t prefix_sum_s;
-    updated_sigs[0] = sigs_old[0];
+    updated_sigs.push_back(sigs_old[0]);
     prefix_sum_s = del_s[0];
     
     for (size_t i = 1; i < vec_size; ++i) {
-        updated_sigs[i] = circ.addGate(common::utils::GateType::kSub, sigs_old[i], prefix_sum_s);
+        updated_sigs.push_back(circ.addGate(common::utils::GateType::kSub, sigs_old[i], prefix_sum_s));
         prefix_sum_s = circ.addGate(common::utils::GateType::kAdd, prefix_sum_s, del_s[i]);
     }
-    payload_s[0] = updated_sigs; 
+    payload_s[0] = std::move(updated_sigs); 
     payload_s = circ.addSubCircPermList(sigs_to_sigv, payload_s, permutation);
-    updated_sigs = payload_s[0];
+    updated_sigs = std::move(payload_s[0]);
 
     // // Update sigd
-    std::vector<wire_t> updated_sigd(vec_size);
-    std::vector<wire_t> sigd_old = payload_d[0];
-    std::vector<wire_t> del_d = payload_d[1];
+    std::vector<wire_t> updated_sigd;
+    updated_sigd.reserve(vec_size);
+    auto& sigd_old = payload_d[0];
+    auto& del_d = payload_d[1];
     wire_t prefix_sum_d;
-    updated_sigd[0] = sigd_old[0];
+    updated_sigd.push_back(sigd_old[0]);
     prefix_sum_d = del_d[0];
     for (size_t i = 1; i < vec_size; ++i) {
-        updated_sigd[i] = circ.addGate(common::utils::GateType::kSub, sigd_old[i], prefix_sum_d);
+        updated_sigd.push_back(circ.addGate(common::utils::GateType::kSub, sigd_old[i], prefix_sum_d));
         prefix_sum_d = circ.addGate(common::utils::GateType::kAdd, prefix_sum_d, del_d[i]);
     }
-    payload_d[0] = updated_sigd; 
+    payload_d[0] = std::move(updated_sigd); 
     payload_d = circ.addSubCircPermList(sigd_to_sigv, payload_d, permutation);
-    updated_sigd = payload_d[0];
+    updated_sigd = std::move(payload_d[0]);
+    
+    // Clear del vectors to free memory
+    del_v.clear();
+    del_v.shrink_to_fit();
+    del_e.clear();
+    del_e.shrink_to_fit();
 
     payload1.resize(7);
-    payload1[0] = src;
-    payload1[1] = dst;
-    payload1[2] = data;
-    payload1[3] = isV;
-    payload1[4] = updated_sigv;
-    payload1[5] = updated_sigs;
-    payload1[6] = updated_sigd;
+    payload1[0] = std::move(src);
+    payload1[1] = std::move(dst);
+    payload1[2] = std::move(data);
+    payload1[3] = std::move(isV);
+    payload1[4] = std::move(updated_sigv);
+    payload1[5] = std::move(updated_sigs);
+    payload1[6] = std::move(updated_sigd);
 
     auto [num_remaining, payload1_deleted] = circ.addDeleteWiresGate(del_final, payload1, permutation);
 
@@ -438,6 +493,7 @@ void benchmark(const bpo::variables_map& opts) {
     auto repeat = opts["repeat"].as<size_t>();
     auto port = opts["port"].as<int>();
     auto use_pking = opts["use-pking"].as<bool>();
+    auto random_inputs = opts["random-inputs"].as<bool>();
 
     omp_set_nested(1);
     if (nP < 10) { omp_set_num_threads(nP); }
@@ -472,28 +528,54 @@ void benchmark(const bpo::variables_map& opts) {
     Ring nV = static_cast<Ring>(num_vert);
     Ring nE = static_cast<Ring>(num_edge);
     
-    std::cout << "============================\n" << std::endl;
-    std::cout << "Generating random inputs " << std::endl;
-    std::cout << "Generating scale-free graph with nV=" << nV << ", nE=" << nE << " (seed=" << seed << ")" << std::endl;
-    auto edges = generate_scale_free(nV, nE, seed);
-    std::cout << "Generated " << edges.size() << " edges" << std::endl;
+    DistributedDaglist dist_daglist;
+    dist_daglist.num_clients = nC;
+    dist_daglist.nV = nV;
+    dist_daglist.nE = nE;
     
-    std::cout << "Building daglist..." << std::endl;
-    auto daglist = build_daglist(nV, edges);
-    std::cout << "Built daglist with " << daglist.size() << " entries" << std::endl;
-    
-    // Distribute daglist across clients
-    std::cout << "Distributing daglist across " << nC << " clients..." << std::endl;
-    auto dist_daglist = distribute_daglist(daglist, nC);
-    
-    // Generate random deletion tags (delete 20% of entries)
-    Ring num_deletes = static_cast<Ring>(vec_size * 0.2);
-    std::cout << "Generating random deletion tags for " << num_deletes << " entries..." << std::endl;
-    dist_daglist = generate_random_entry_deletes(dist_daglist, num_deletes, seed);
+    if (!random_inputs) {
+        std::cout << "============================\n" << std::endl;
+        std::cout << "Generating random inputs " << std::endl;
+        std::cout << "Generating scale-free graph with nV=" << nV << ", nE=" << nE << " (seed=" << seed << ")" << std::endl;
+        auto edges = generate_scale_free(nV, nE, seed);
+        std::cout << "Generated " << edges.size() << " edges" << std::endl;
+        
+        std::cout << "Building daglist..." << std::endl;
+        auto daglist = build_daglist(nV, edges);
+        std::cout << "Built daglist with " << daglist.size() << " entries" << std::endl;
+        
+        // Distribute daglist across clients
+        std::cout << "Distributing daglist across " << nC << " clients..." << std::endl;
+        dist_daglist = distribute_daglist(daglist, nC);
+        
+        // Generate random deletion tags (delete 5% of entries)
+        Ring num_deletes = static_cast<Ring>(vec_size * 0.05);
+        std::cout << "Generating random deletion tags for " << num_deletes << " entries..." << std::endl;
+        dist_daglist = generate_random_entry_deletes(dist_daglist, num_deletes, seed);
 
-    // Print input daglist information
-    if (pid == 1) {
-        printDaglistInfo(dist_daglist, "INPUT: Graph Before Deletion");
+        // Print input daglist information
+        if (pid == 1) {
+            printDaglistInfo(dist_daglist, "INPUT: Graph Before Deletion");
+        }
+    } else {
+        std::cout << "============================\n" << std::endl;
+        std::cout << "Using random inputs" << std::endl;
+        
+        // Compute sizes for distribution
+        dist_daglist.VSizes.resize(nC);
+        dist_daglist.ESizes.resize(nC);
+        
+        int base_verts = nV / nC;
+        int base_edges = nE / nC;
+        int extra_verts = nV % nC;
+        int extra_edges = nE % nC;
+        
+        for (int i = 0; i < nC; ++i) {
+            dist_daglist.VSizes[i] = base_verts + (i < extra_verts ? 1 : 0);
+            dist_daglist.ESizes[i] = base_edges + (i < extra_edges ? 1 : 0);
+        }
+        
+        std::cout << "Computed distribution: " << nC << " clients, " << nV << " vertices, " << nE << " edges" << std::endl;
     }
 
     StatsPoint start(*network);
@@ -524,81 +606,88 @@ void benchmark(const bpo::variables_map& opts) {
     std::cout << "Setting inputs" << std::endl;
     OnlineEvaluator eval(nP, pid, network, std::move(preproc), circ, threads, seed, latency_us, use_pking);
     
-    std::unordered_map<common::utils::wire_t, Ring> inputs;
-    
-    // Collect all input wires owned by this party
-    std::vector<common::utils::wire_t> input_wires;
-    for (const auto& [wire, owner] : input_pid_map) {
-        if (owner == static_cast<int>(pid)) {
-            input_wires.push_back(wire);
-        }
-    }
-    
-    // Sort to ensure consistent ordering
-    std::sort(input_wires.begin(), input_wires.end());
-    
-    std::cout << "Setting inputs for party " << pid << std::endl;
-    
-    // Only party 1 sets inputs
-    std::vector<Ring> graph_input_values;
-
-    if (pid == 1) {
-        std::vector<Ring> all_input_values;
-        
-    // Collect all vertex and edge fields for all clients
-    for (int c = 0; c < nC; ++c) {
-        for (size_t i = 0; i < dist_daglist.VSizes[c]; ++i) {
-            all_input_values.push_back(dist_daglist.VertexLists[c][i].src);
-            all_input_values.push_back(dist_daglist.VertexLists[c][i].dst);
-            all_input_values.push_back(dist_daglist.VertexLists[c][i].isV);
-            all_input_values.push_back(dist_daglist.VertexLists[c][i].data);
-            all_input_values.push_back(dist_daglist.VertexLists[c][i].sigs);
-            all_input_values.push_back(dist_daglist.VertexLists[c][i].sigv);
-            all_input_values.push_back(dist_daglist.VertexLists[c][i].sigd);
-            all_input_values.push_back(dist_daglist.isDelV[c][i]);
-        }
-
-        for (size_t i = 0; i < dist_daglist.ESizes[c]; ++i) {
-            all_input_values.push_back(dist_daglist.EdgeLists[c][i].src);
-            all_input_values.push_back(dist_daglist.EdgeLists[c][i].dst);
-            all_input_values.push_back(dist_daglist.EdgeLists[c][i].isV);
-            all_input_values.push_back(dist_daglist.EdgeLists[c][i].data);
-            all_input_values.push_back(dist_daglist.EdgeLists[c][i].sigs);
-            all_input_values.push_back(dist_daglist.EdgeLists[c][i].sigv);
-            all_input_values.push_back(dist_daglist.EdgeLists[c][i].sigd);
-            all_input_values.push_back(dist_daglist.isDelE[c][i]);
-        }
-    }
-        
-                // Map collected values into circuit input wires (in order)
-        size_t wire_idx = 0;
-        for (size_t i = 0; i < all_input_values.size() && wire_idx < input_wires.size(); ++i) {
-            inputs[input_wires[wire_idx++]] = all_input_values[i];
-        }
-        
-        // Store for verification
-        graph_input_values = all_input_values;
-    }
-
-    std::cout << "Total inputs set by party " << pid << ": " << inputs.size() << std::endl;
-    
-    if (pid == 1) {
-        std::cout << "Party 1 setting " << inputs.size() << " actual input values" << std::endl;
+    if (random_inputs) {
+        // Use random inputs for benchmarking
+        std::cout << "Using random inputs for party " << pid << std::endl;
+        eval.setRandomInputs();
     } else {
-        std::cout << "Party " << pid << " setting " << inputs.size() << " empty inputs (participant in MPC)" << std::endl;
+        std::unordered_map<common::utils::wire_t, Ring> inputs;
+        
+        // Collect all input wires owned by this party
+        std::vector<common::utils::wire_t> input_wires;
+        for (const auto& [wire, owner] : input_pid_map) {
+            if (owner == static_cast<int>(pid)) {
+                input_wires.push_back(wire);
+            }
+        }
+        
+        // Sort to ensure consistent ordering
+        std::sort(input_wires.begin(), input_wires.end());
+        
+        std::cout << "Setting inputs for party " << pid << std::endl;
+        
+        // Only party 1 sets inputs
+        std::vector<Ring> graph_input_values;
+
+        if (pid == 1) {
+            std::vector<Ring> all_input_values;
+            
+        // Collect all vertex and edge fields for all clients
+        for (int c = 0; c < nC; ++c) {
+            for (size_t i = 0; i < dist_daglist.VSizes[c]; ++i) {
+                all_input_values.push_back(dist_daglist.VertexLists[c][i].src);
+                all_input_values.push_back(dist_daglist.VertexLists[c][i].dst);
+                all_input_values.push_back(dist_daglist.VertexLists[c][i].isV);
+                all_input_values.push_back(dist_daglist.VertexLists[c][i].data);
+                all_input_values.push_back(dist_daglist.VertexLists[c][i].sigs);
+                all_input_values.push_back(dist_daglist.VertexLists[c][i].sigv);
+                all_input_values.push_back(dist_daglist.VertexLists[c][i].sigd);
+                all_input_values.push_back(dist_daglist.isDelV[c][i]);
+            }
+
+            for (size_t i = 0; i < dist_daglist.ESizes[c]; ++i) {
+                all_input_values.push_back(dist_daglist.EdgeLists[c][i].src);
+                all_input_values.push_back(dist_daglist.EdgeLists[c][i].dst);
+                all_input_values.push_back(dist_daglist.EdgeLists[c][i].isV);
+                all_input_values.push_back(dist_daglist.EdgeLists[c][i].data);
+                all_input_values.push_back(dist_daglist.EdgeLists[c][i].sigs);
+                all_input_values.push_back(dist_daglist.EdgeLists[c][i].sigv);
+                all_input_values.push_back(dist_daglist.EdgeLists[c][i].sigd);
+                all_input_values.push_back(dist_daglist.isDelE[c][i]);
+            }
+        }
+            
+                    // Map collected values into circuit input wires (in order)
+            size_t wire_idx = 0;
+            for (size_t i = 0; i < all_input_values.size() && wire_idx < input_wires.size(); ++i) {
+                inputs[input_wires[wire_idx++]] = all_input_values[i];
+            }
+            
+            // Store for verification
+            graph_input_values = all_input_values;
+        }
+
+        std::cout << "Total inputs set by party " << pid << ": " << inputs.size() << std::endl;
+        
+        if (pid == 1) {
+            std::cout << "Party 1 setting " << inputs.size() << " actual input values" << std::endl;
+        } else {
+            std::cout << "Party " << pid << " setting " << inputs.size() << " empty inputs (participant in MPC)" << std::endl;
+        }
+        
+        eval.setInputs(inputs);
     }
-    
-    eval.setInputs(inputs);
     network->sync();
     
     std::cout << "Starting online evaluation" << std::endl;
     StatsPoint online_start(*network);
     for (size_t i = 0; i < circ.gates_by_level.size(); ++i) {
         eval.evaluateGatesAtDepth(i);
-        network->sync();
-        network->flush();
+        // network->sync();
+        // network->flush();
     }
     network->sync();
+    StatsPoint end(*network);
     StatsPoint online_end(*network);
     std::cout << "Online evaluation complete" << std::endl;
 
@@ -608,12 +697,12 @@ void benchmark(const bpo::variables_map& opts) {
     network->sync();
     std::cout << "Number of outputs: " << outputs.size() << std::endl;
     
-    // Print formatted outputs
-    if (pid == 1 && outputs.size() > 0) {
+    // Print formatted outputs (skip if using random inputs)
+    if (!random_inputs && pid == 1 && outputs.size() > 0) {
         printOutputs(outputs, vec_size);
     }
 
-    StatsPoint end(*network);
+    
 
      auto preproc_rbench = preproc_end - preproc_start;
     auto online_rbench = online_end - online_start;
@@ -675,7 +764,8 @@ bpo::options_description programOptions() {
         ("port", bpo::value<int>()->default_value(10000), "Base port for networking.")
         ("output,o", bpo::value<std::string>(), "File to save benchmarks.")
         ("repeat,r", bpo::value<size_t>()->default_value(1), "Number of times to run benchmarks.")
-        ("use-pking", bpo::value<bool>()->default_value(true), "Use king party for reconstruction (true) or direct reconstruction (false).");
+        ("use-pking", bpo::value<bool>()->default_value(true), "Use king party for reconstruction (true) or direct reconstruction (false).")
+        ("random-inputs", bpo::value<bool>()->default_value(false), "Use random inputs for benchmarking.");
   return desc;
 }
 // clang-format on

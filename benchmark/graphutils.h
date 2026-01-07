@@ -237,7 +237,7 @@ struct SSDistributedDaglist {
 };
 
 static inline Ring pack_pair(Ring a, Ring b) {
-  return (a << 32) | b;
+  return (static_cast<uint64_t>(a) << 32) | b;
 }
 
 inline vector<pair<Ring, Ring>> generate_scale_free(Ring nV, Ring nE, Ring fixed_seed = 42) {

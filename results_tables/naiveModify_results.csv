@@ -1,0 +1,2 @@
+Num Verts,Num Edges,Num Clients,Preproc Time (s),Preproc Sent (MB),Online Time (s),Online Sent (MB)
+1000,10000,2,87.033128,3046.417259,12.261699,369.262695

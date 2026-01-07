@@ -78,6 +78,14 @@ common::utils::Circuit<Ring> generateGraphitiInitCircuit(int nP, int pid, size_t
     
     // Second parallel sort subcircuit (using same input wires)
     auto sorted_indices_2 = circ.addSortSubcircuit(shuffleB, permutations_sort, pid);
+
+    // Rconstruct public permutations
+    std::vector<wire_t> rec_permutation_1(vec_size);
+    std::vector<wire_t> rec_permutation_2(vec_size);
+    for (int i = 0; i < vec_size; ++i) {
+        rec_permutation_1[i] = circ.addGate(common::utils::GateType::kRec, sorted_indices_1[i]);
+        rec_permutation_2[i] = circ.addGate(common::utils::GateType::kRec, sorted_indices_2[i]);
+    }   
     
     // Set outputs: sorted indices from both sort gates
     for (size_t i = 0; i < sorted_indices_1.size(); ++i) {

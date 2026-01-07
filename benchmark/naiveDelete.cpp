@@ -201,7 +201,7 @@ void benchmark(const bpo::variables_map& opts) {
 
     auto num_verts = opts["num-verts"].as<size_t>();
     auto num_edges = opts["num-edges"].as<size_t>();
-    auto num_deletes = opts["num-deletes"].as<size_t>();
+    auto num_deletes = opts.count("num-deletes") ? opts["num-deletes"].as<size_t>() : static_cast<size_t>((num_verts + num_edges) * 0.05);
     auto nP = opts["num-parties"].as<int>();
     auto latency = opts["latency"].as<double>();
     auto pid = opts["pid"].as<size_t>();
@@ -382,7 +382,7 @@ bpo::options_description programOptions() {
         ("num-parties,n", bpo::value<int>()->required(), "Number of parties.")
         ("num-verts", bpo::value<size_t>()->required(), "Number of vertices.")
         ("num-edges", bpo::value<size_t>()->required(), "Number of edges.")
-        ("num-deletes", bpo::value<size_t>()->required(), "Number of entries to delete.")
+        ("num-deletes", bpo::value<size_t>(), "Number of entries to delete (default: (num-verts + num-edges) * 0.05).")
         ("latency,l", bpo::value<double>()->default_value(0.5), "Network latency in ms.")
         ("pid,p", bpo::value<size_t>()->required(), "Party ID.")
         ("threads,t", bpo::value<size_t>()->default_value(6), "Number of threads (recommended 6).")

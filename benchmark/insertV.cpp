@@ -396,7 +396,7 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
     wire_t next_sigs_wire = zero_wire;
     next_sigs_wire = circ.addConstOpGate(common::utils::GateType::kConstAdd, zero_wire, Ring(vec_size + add_nV));
     for (int i = nC-1; i >= 0; --i) {
-        for (int k = add_VSizes[i]; k >= 0; --k) {
+        for (int k = add_VSizes[i] - 1; k >= 0; --k) {
                 new_vertex_sigs_values[i][k] = 
                     circ.addConstOpGate(common::utils::GateType::kConstAdd, 
                                         next_sigs_wire, Ring(k*-1 -1));
@@ -567,6 +567,7 @@ void benchmark(const bpo::variables_map& opts) {
     auto repeat = opts["repeat"].as<size_t>();
     auto port = opts["port"].as<int>();
     auto use_pking = opts["use-pking"].as<bool>();
+    auto random_inputs = opts["random-inputs"].as<bool>();
 
     omp_set_nested(1);
     if (nP < 10) { omp_set_num_threads(nP); }
@@ -603,24 +604,61 @@ void benchmark(const bpo::variables_map& opts) {
     Ring nV = static_cast<Ring>(num_vert);
     Ring nE = static_cast<Ring>(num_edge);
     
-    std::cout << "============================\n" << std::endl;
-    std::cout << "Generating random inputs " << std::endl;
-    std::cout << "Generating scale-free graph with nV=" << nV << ", nE=" << nE << " (seed=" << seed << ")" << std::endl;
-    auto edges = generate_scale_free(nV, nE, seed);
-    std::cout << "Generated " << edges.size() << " edges" << std::endl;
+    DistributedDaglist dist_daglist;
+    dist_daglist.num_clients = nC;
+    dist_daglist.nV = nV;
+    dist_daglist.nE = nE;
     
-    std::cout << "Building daglist..." << std::endl;
-    auto daglist = build_daglist(nV, edges);
-    std::cout << "Built daglist with " << daglist.size() << " entries" << std::endl;
-    
-    // Distribute daglist across clients
-    std::cout << "Distributing daglist across " << nC << " clients..." << std::endl;
-    auto dist_daglist = distribute_daglist(daglist, nC);
-    
-    // Generate random vertices to insert (insert 20% of current vertices)
-    Ring num_inserts = static_cast<Ring>(num_inserts_);
-    std::cout << "Generating random vertices to insert: " << num_inserts << " vertices..." << std::endl;
-    dist_daglist = generate_random_vertices_to_insert(dist_daglist, num_inserts, seed);
+    if (!random_inputs) {
+        std::cout << "============================\n" << std::endl;
+        std::cout << "Generating random inputs " << std::endl;
+        std::cout << "Generating scale-free graph with nV=" << nV << ", nE=" << nE << " (seed=" << seed << ")" << std::endl;
+        auto edges = generate_scale_free(nV, nE, seed);
+        std::cout << "Generated " << edges.size() << " edges" << std::endl;
+        
+        std::cout << "Building daglist..." << std::endl;
+        auto daglist = build_daglist(nV, edges);
+        std::cout << "Built daglist with " << daglist.size() << " entries" << std::endl;
+        
+        // Distribute daglist across clients
+        std::cout << "Distributing daglist across " << nC << " clients..." << std::endl;
+        dist_daglist = distribute_daglist(daglist, nC);
+        
+        // Generate random vertices to insert (insert 20% of current vertices)
+        Ring num_inserts = static_cast<Ring>(num_inserts_);
+        std::cout << "Generating random vertices to insert: " << num_inserts << " vertices..." << std::endl;
+        dist_daglist = generate_random_vertices_to_insert(dist_daglist, num_inserts, seed);
+    } else {
+        std::cout << "============================\n" << std::endl;
+        std::cout << "Using random inputs" << std::endl;
+        
+        // Compute sizes for distribution
+        dist_daglist.VSizes.resize(nC);
+        dist_daglist.ESizes.resize(nC);
+        
+        int base_verts = nV / nC;
+        int base_edges = nE / nC;
+        int extra_verts = nV % nC;
+        int extra_edges = nE % nC;
+        
+        for (int i = 0; i < nC; ++i) {
+            dist_daglist.VSizes[i] = base_verts + (i < extra_verts ? 1 : 0);
+            dist_daglist.ESizes[i] = base_edges + (i < extra_edges ? 1 : 0);
+        }
+        
+        // Allocate InsertV sizes
+        dist_daglist.InsertV.resize(nC);
+        Ring num_inserts = static_cast<Ring>(num_inserts_);
+        int base_inserts = num_inserts / nC;
+        int extra_inserts = num_inserts % nC;
+        
+        for (int i = 0; i < nC; ++i) {
+            int inserts = base_inserts + (i < extra_inserts ? 1 : 0);
+            dist_daglist.InsertV[i].resize(inserts);
+        }
+        
+        std::cout << "Computed distribution: " << nC << " clients, " << nV << " vertices, " << nE << " edges, " << num_inserts << " inserts" << std::endl;
+    }
 
 
     StatsPoint start(*network);
@@ -666,74 +704,80 @@ void benchmark(const bpo::variables_map& opts) {
     
     std::cout << "Setting inputs for party " << pid << std::endl;
     
-    // Only party 1 sets inputs
-    std::vector<Ring> graph_input_values;
-
-    if (pid == 1) {
-
-        // Print distribution info
-        std::cout << "\n=== Daglist Distribution ===" << std::endl;
-        for (int i = 0; i < nC; ++i) {
-            std::cout << "Client " << i << ": " << dist_daglist.VSizes[i] << " vertices, "
-                    << dist_daglist.ESizes[i] << " edges, " << dist_daglist.InsertV[i].size() << " to insert" << std::endl;
-        }
-        std::cout << "============================\n" << std::endl;
-    
-        std::vector<Ring> all_input_values;
-        
-        // Collect all vertex and edge fields for all clients
-        for (int c = 0; c < nC; ++c) {
-            for (size_t i = 0; i < dist_daglist.VSizes[c]; ++i) {
-                all_input_values.push_back(dist_daglist.VertexLists[c][i].src);
-                all_input_values.push_back(dist_daglist.VertexLists[c][i].dst);
-                all_input_values.push_back(dist_daglist.VertexLists[c][i].isV);
-                all_input_values.push_back(dist_daglist.VertexLists[c][i].data);
-                all_input_values.push_back(dist_daglist.VertexLists[c][i].sigs);
-                all_input_values.push_back(dist_daglist.VertexLists[c][i].sigv);
-                all_input_values.push_back(dist_daglist.VertexLists[c][i].sigd);
-            }
-
-            for (size_t i = 0; i < dist_daglist.ESizes[c]; ++i) {
-                all_input_values.push_back(dist_daglist.EdgeLists[c][i].src);
-                all_input_values.push_back(dist_daglist.EdgeLists[c][i].dst);
-                all_input_values.push_back(dist_daglist.EdgeLists[c][i].isV);
-                all_input_values.push_back(dist_daglist.EdgeLists[c][i].data);
-                all_input_values.push_back(dist_daglist.EdgeLists[c][i].sigs);
-                all_input_values.push_back(dist_daglist.EdgeLists[c][i].sigv);
-                all_input_values.push_back(dist_daglist.EdgeLists[c][i].sigd);
-            }
-        }
-        
-        // Collect new vertex fields for all clients
-        for (int c = 0; c < nC; ++c) {
-            for (size_t i = 0; i < dist_daglist.InsertV[c].size(); ++i) {
-                all_input_values.push_back(dist_daglist.InsertV[c][i].src);
-                all_input_values.push_back(dist_daglist.InsertV[c][i].dst);
-                all_input_values.push_back(dist_daglist.InsertV[c][i].isV);
-                all_input_values.push_back(dist_daglist.InsertV[c][i].data);
-            }
-        }
-        
-        // Map collected values into circuit input wires (in order)
-        size_t wire_idx = 0;
-        for (size_t i = 0; i < all_input_values.size() && wire_idx < input_wires.size(); ++i) {
-            inputs[input_wires[wire_idx++]] = all_input_values[i];
-        }
-        
-        // Store for verification
-        graph_input_values = all_input_values;
-    
-    }
-
-    std::cout << "Total inputs set by party " << pid << ": " << inputs.size() << std::endl;
-    
-    if (pid == 1) {
-        std::cout << "Party 1 setting " << inputs.size() << " actual input values" << std::endl;
+    if (random_inputs) {
+        // Use random inputs for benchmarking
+        std::cout << "Using random inputs for party " << pid << std::endl;
+        eval.setRandomInputs();
     } else {
-        std::cout << "Party " << pid << " setting " << inputs.size() << " empty inputs (participant in MPC)" << std::endl;
+        // Only party 1 sets inputs
+        std::vector<Ring> graph_input_values;
+
+        if (pid == 1) {
+
+            // Print distribution info
+            std::cout << "\n=== Daglist Distribution ===" << std::endl;
+            for (int i = 0; i < nC; ++i) {
+                std::cout << "Client " << i << ": " << dist_daglist.VSizes[i] << " vertices, "
+                        << dist_daglist.ESizes[i] << " edges, " << dist_daglist.InsertV[i].size() << " to insert" << std::endl;
+            }
+            std::cout << "============================\n" << std::endl;
+        
+            std::vector<Ring> all_input_values;
+            
+            // Collect all vertex and edge fields for all clients
+            for (int c = 0; c < nC; ++c) {
+                for (size_t i = 0; i < dist_daglist.VSizes[c]; ++i) {
+                    all_input_values.push_back(dist_daglist.VertexLists[c][i].src);
+                    all_input_values.push_back(dist_daglist.VertexLists[c][i].dst);
+                    all_input_values.push_back(dist_daglist.VertexLists[c][i].isV);
+                    all_input_values.push_back(dist_daglist.VertexLists[c][i].data);
+                    all_input_values.push_back(dist_daglist.VertexLists[c][i].sigs);
+                    all_input_values.push_back(dist_daglist.VertexLists[c][i].sigv);
+                    all_input_values.push_back(dist_daglist.VertexLists[c][i].sigd);
+                }
+
+                for (size_t i = 0; i < dist_daglist.ESizes[c]; ++i) {
+                    all_input_values.push_back(dist_daglist.EdgeLists[c][i].src);
+                    all_input_values.push_back(dist_daglist.EdgeLists[c][i].dst);
+                    all_input_values.push_back(dist_daglist.EdgeLists[c][i].isV);
+                    all_input_values.push_back(dist_daglist.EdgeLists[c][i].data);
+                    all_input_values.push_back(dist_daglist.EdgeLists[c][i].sigs);
+                    all_input_values.push_back(dist_daglist.EdgeLists[c][i].sigv);
+                    all_input_values.push_back(dist_daglist.EdgeLists[c][i].sigd);
+                }
+            }
+            
+            // Collect new vertex fields for all clients
+            for (int c = 0; c < nC; ++c) {
+                for (size_t i = 0; i < dist_daglist.InsertV[c].size(); ++i) {
+                    all_input_values.push_back(dist_daglist.InsertV[c][i].src);
+                    all_input_values.push_back(dist_daglist.InsertV[c][i].dst);
+                    all_input_values.push_back(dist_daglist.InsertV[c][i].isV);
+                    all_input_values.push_back(dist_daglist.InsertV[c][i].data);
+                }
+            }
+            
+            // Map collected values into circuit input wires (in order)
+            size_t wire_idx = 0;
+            for (size_t i = 0; i < all_input_values.size() && wire_idx < input_wires.size(); ++i) {
+                inputs[input_wires[wire_idx++]] = all_input_values[i];
+            }
+            
+            // Store for verification
+            graph_input_values = all_input_values;
+        
+        }
+
+        std::cout << "Total inputs set by party " << pid << ": " << inputs.size() << std::endl;
+        
+        if (pid == 1) {
+            std::cout << "Party 1 setting " << inputs.size() << " actual input values" << std::endl;
+        } else {
+            std::cout << "Party " << pid << " setting " << inputs.size() << " empty inputs (participant in MPC)" << std::endl;
+        }
+        
+        eval.setInputs(inputs);
     }
-    
-    eval.setInputs(inputs);
     network->sync();
     
     std::cout << "Starting online evaluation" << std::endl;
@@ -746,6 +790,7 @@ void benchmark(const bpo::variables_map& opts) {
     network->sync();
     StatsPoint online_end(*network);
     std::cout << "Online evaluation complete" << std::endl;
+    StatsPoint end(*network);
 
     std::cout << "Getting outputs..." << std::endl;
     network->flush();
@@ -753,17 +798,19 @@ void benchmark(const bpo::variables_map& opts) {
     network->sync();
     std::cout << "Number of outputs: " << outputs.size() << std::endl;
     
-    // Print formatted inputs
-    if (pid == 1) {
-        printDaglistInfo(dist_daglist, "INPUT: Graph Before Vertex Insertion");
-    }
-    
-    // Print formatted outputs
-    if (pid == 1 && outputs.size() > 0) {
-        printOutputs(outputs, dist_daglist);
+    // Print formatted inputs and outputs (skip if using random inputs)
+    if (!random_inputs) {
+        if (pid == 1) {
+            printDaglistInfo(dist_daglist, "INPUT: Graph Before Vertex Insertion");
+        }
+        
+        // Print formatted outputs
+        if (pid == 1 && outputs.size() > 0) {
+            printOutputs(outputs, dist_daglist);
+        }
     }
 
-    StatsPoint end(*network);
+    
 
      auto preproc_rbench = preproc_end - preproc_start;
     auto online_rbench = online_end - online_start;
@@ -814,7 +861,7 @@ bpo::options_description programOptions() {
         ("num-clients", bpo::value<int>()->default_value(2), "Number of parties.")
         ("num-vert", bpo::value<size_t>()->default_value(1000), "Number of vertices in the graph.")
         ("num-edge", bpo::value<size_t>()->default_value(4000), "Number of edges in the graph.")
-        ("num-inserts", bpo::value<size_t>(), "Number of vertex insertions (default: num-vert * 0.2).")
+        ("num-inserts", bpo::value<size_t>(), "Number of vertex insertions (default: num-vert * 0.05).")
         ("num-payloads", bpo::value<size_t>()->default_value(1), "Number of payload vectors.")
         ("latency,l", bpo::value<double>()->default_value(0.5), "Network latency in ms.")
         ("pid,p", bpo::value<size_t>()->required(), "Party ID.")
@@ -825,7 +872,8 @@ bpo::options_description programOptions() {
         ("port", bpo::value<int>()->default_value(10000), "Base port for networking.")
         ("output,o", bpo::value<std::string>(), "File to save benchmarks.")
         ("repeat,r", bpo::value<size_t>()->default_value(1), "Number of times to run benchmarks.")
-        ("use-pking", bpo::value<bool>()->default_value(true), "Use king party for reconstruction (true) or direct reconstruction (false).");
+        ("use-pking", bpo::value<bool>()->default_value(true), "Use king party for reconstruction (true) or direct reconstruction (false).")
+        ("random-inputs", bpo::value<bool>()->default_value(false), "Use random inputs for benchmarking.");
   return desc;
 }
 
@@ -860,7 +908,7 @@ int main(int argc, char* argv[]) {
         // Set default value for num-inserts if not provided
         if (opts.count("num-inserts") == 0) {
             size_t num_vert = opts["num-vert"].as<size_t>();
-            size_t default_inserts = static_cast<size_t>(num_vert * 0.2);
+            size_t default_inserts = static_cast<size_t>(num_vert * 0.05);
             opts.insert(std::make_pair("num-inserts", bpo::variable_value(default_inserts, false)));
         }
     } catch (const std::exception& ex) {

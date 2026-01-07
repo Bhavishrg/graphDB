@@ -38,32 +38,58 @@ if [ ! -f "$BENCHMARK_PATH" ]; then
     exit 1
 fi
 
-# Capture all remaining arguments as benchmark options
-BENCHMARK_OPTS="$@"
+# Capture all remaining arguments as benchmark options (preserve spacing)
+BENCHMARK_OPTS=("$@")
 
-# Extract number of players from options (default to 2 if not specified)
+# Extract options we need for directory naming
 players=2
-for arg in $BENCHMARK_OPTS; do
-    if [[ "$prev_arg" == "-n" ]] || [[ "$prev_arg" == "--num-parties" ]]; then
-        players="$arg"
-    fi
-    prev_arg="$arg"
+num_verts="unspecified_verts"
+num_edges="unspecified_edges"
+num_clients=""
+
+for ((i=0; i<${#BENCHMARK_OPTS[@]}; i++)); do
+    case "${BENCHMARK_OPTS[$i]}" in
+        -n|--num-parties)
+            if (( i + 1 < ${#BENCHMARK_OPTS[@]} )); then
+                players="${BENCHMARK_OPTS[$((i+1))]}"
+            fi
+            ;;
+        --num-vert|--num-verts)
+            if (( i + 1 < ${#BENCHMARK_OPTS[@]} )); then
+                num_verts="${BENCHMARK_OPTS[$((i+1))]}"
+            fi
+            ;;
+        --num-edge|--num-edges)
+            if (( i + 1 < ${#BENCHMARK_OPTS[@]} )); then
+                num_edges="${BENCHMARK_OPTS[$((i+1))]}"
+            fi
+            ;;
+        --num-clients)
+            if (( i + 1 < ${#BENCHMARK_OPTS[@]} )); then
+                num_clients="${BENCHMARK_OPTS[$((i+1))]}"
+            fi
+            ;;
+    esac
 done
 
-# If -n/--num-parties not found in options, add default
-if [[ ! " $BENCHMARK_OPTS " =~ " -n " ]] && [[ ! " $BENCHMARK_OPTS " =~ " --num-parties " ]]; then
-    BENCHMARK_OPTS="$BENCHMARK_OPTS -n $players"
+if [[ -z "$num_clients" ]]; then
+    num_clients="$players"
 fi
 
-# Create results directory structure: Results/<benchmark_name>/<num_parties>
-dir=$PWD/../Results/$BENCHMARK_NAME/$players\_PC
+# If -n/--num-parties not found in options, add default
+if [[ ! " ${BENCHMARK_OPTS[*]} " =~ " -n " ]] && [[ ! " ${BENCHMARK_OPTS[*]} " =~ " --num-parties " ]]; then
+    BENCHMARK_OPTS+=("-n" "$players")
+fi
+
+# Create results directory structure: Results/<benchmark_name>/<num_verts>/<num_edges>/<num_clients>
+dir=$PWD/../Results/$BENCHMARK_NAME/$num_verts/$num_edges/$num_clients
 
 # Clean up old results for this benchmark and party configuration
 # rm -rf $dir
 
 echo "Running benchmark: $BENCHMARK_NAME"
 echo "Number of players: $players"
-echo "Benchmark options: $BENCHMARK_OPTS"
+echo "Benchmark options: ${BENCHMARK_OPTS[*]}"
 echo "Results directory: $dir"
 echo ""
 
@@ -72,17 +98,17 @@ do
     for party in $(seq 1 $players)
     do
         logdir=$dir
-        mkdir -p $logdir
+        mkdir -p "$logdir"
         log=$logdir/party_$party.log
         tplog=$logdir/party_0.log
 
         # Run benchmark for each party with --localhost option
-        eval "$BENCHMARK_PATH $BENCHMARK_OPTS --localhost -p $party" 2>&1 | cat > $log &
+        "$BENCHMARK_PATH" "${BENCHMARK_OPTS[@]}" --localhost -p "$party" 2>&1 | cat > "$log" &
         codes[$party]=$!
     done
     
     # Run benchmark for party 0 (trusted party)
-    eval "$BENCHMARK_PATH $BENCHMARK_OPTS --localhost -p 0" 2>&1 | cat > $tplog & 
+    "$BENCHMARK_PATH" "${BENCHMARK_OPTS[@]}" --localhost -p 0 2>&1 | cat > "$tplog" & 
     codes[0]=$!
     
     # Wait for all parties to complete
@@ -98,5 +124,5 @@ echo ""
 # Run aggregation script if it exists
 if [ -f "/code/pythonScripts/getAggStat.py" ]; then
     echo "Running aggregation script..."
-    python3 /code/pythonScripts/getAggStat.py $logdir/
+    python3 /code/pythonScripts/getAggStat.py "$logdir/"
 fi

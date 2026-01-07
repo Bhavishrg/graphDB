@@ -18,61 +18,89 @@ using namespace graphdb;
 using json = nlohmann::json;
 namespace bpo = boost::program_options;
 
-common::utils::Circuit<Ring> generateGraphitiInitCircuit(int nP, int pid, size_t num_verts, size_t num_edges) {
+common::utils::Circuit<Ring> generateDataChangeCircuit(int nP, int pid, size_t num_verts, size_t num_edges, size_t num_changes) {
     
-    // Calculate vec_size and input_size as specified
     size_t vec_size = num_verts + num_edges;
-    size_t input_size = static_cast<size_t>(std::ceil(std::log2(num_verts * 10)));
     
-    std::cout << "Generating Graphiti init circuit with:" << std::endl;
+    std::cout << "Generating data change circuit with:" << std::endl;
     std::cout << "  num_verts=" << num_verts << std::endl;
     std::cout << "  num_edges=" << num_edges << std::endl;
     std::cout << "  vec_size=" << vec_size << " (num_verts + num_edges)" << std::endl;
-    std::cout << "  input_size=" << input_size << " (ceil(log_2(num_verts*10)))" << std::endl;
-    std::cout << "  Total wires: " << (vec_size * input_size) << std::endl;
+    std::cout << "  num_changes=" << num_changes << std::endl;
+    std::cout << "  Total daglist wires: " << (vec_size * 7) << " (7 fields per entry)" << std::endl;
+    std::cout << "  Total change wires: " << (num_changes * 4) << " (4 fields per change)" << std::endl;
     
     common::utils::Circuit<Ring> circ;
 
-    // Input: vec_size * input_size wires (binary values 0 or 1)
-    std::vector<common::utils::wire_t> input_wires(vec_size * input_size);
+    // Input: vec_size * 7 wires for daglist entries (src, dst, isV, data, sigs, sigv, sigd)
+    std::vector<common::utils::wire_t> daglist_src(vec_size);
+    std::vector<common::utils::wire_t> daglist_dst(vec_size);
+    std::vector<common::utils::wire_t> daglist_isV(vec_size);
+    std::vector<common::utils::wire_t> daglist_data(vec_size);
+    std::vector<common::utils::wire_t> daglist_sigs(vec_size);
+    std::vector<common::utils::wire_t> daglist_sigv(vec_size);
+    std::vector<common::utils::wire_t> daglist_sigd(vec_size);
     
-    for (size_t i = 0; i < vec_size * input_size; ++i) {
-        input_wires[i] = circ.newInputWire();
+    for (size_t i = 0; i < vec_size; ++i) {
+        daglist_src[i] = circ.newInputWire();
+        daglist_dst[i] = circ.newInputWire();
+        daglist_isV[i] = circ.newInputWire();
+        daglist_data[i] = circ.newInputWire();
+        daglist_sigs[i] = circ.newInputWire();
+        daglist_sigv[i] = circ.newInputWire();
+        daglist_sigd[i] = circ.newInputWire();
     }
 
-    // Generate identity permutation for preprocessing
-    std::vector<std::vector<int>> permutations;
-    std::vector<int> identity_perm(vec_size);
-    for (size_t i = 0; i < vec_size; ++i) {
-        identity_perm[i] = i;
+    // Input: num_changes * 4 wires for change entries (src, dst, isV, new_data)
+    std::vector<common::utils::wire_t> change_src(num_changes);
+    std::vector<common::utils::wire_t> change_dst(num_changes);
+    std::vector<common::utils::wire_t> change_isV(num_changes);
+    std::vector<common::utils::wire_t> change_data(num_changes);
+    
+    for (size_t i = 0; i < num_changes; ++i) {
+        change_src[i] = circ.newInputWire();
+        change_dst[i] = circ.newInputWire();
+        change_isV[i] = circ.newInputWire();
+        change_data[i] = circ.newInputWire();
     }
-    permutations.push_back(identity_perm);
-    if (pid == 0) {
-        for (int i = 1; i < nP; ++i) {
-            permutations.push_back(identity_perm);
+
+    // Process each change entry
+    std::vector<common::utils::wire_t> updated_daglist_data = daglist_data;
+    
+    for (size_t c = 0; c < num_changes; ++c) {        
+        // For each daglist entry, check if it matches this change
+        for (size_t i = 0; i < vec_size; ++i) {
+            // Equality check 1: change.src == daglist.src
+            auto diff_src = circ.addGate(common::utils::GateType::kSub, change_src[c], daglist_src[i]);
+            auto eq_src = circ.addGate(common::utils::GateType::kEqz, diff_src);
+            
+            // Equality check 2: change.dst == daglist.dst
+            auto diff_dst = circ.addGate(common::utils::GateType::kSub, change_dst[c], daglist_dst[i]);
+            auto eq_dst = circ.addGate(common::utils::GateType::kEqz, diff_dst);
+            
+            // Both must match: match = eq_src * eq_dst
+            auto match = circ.addGate(common::utils::GateType::kMul, eq_src, eq_dst);
+            
+            // Calculate data difference: diff = change.data - daglist.data
+            auto data_diff = circ.addGate(common::utils::GateType::kSub, change_data[c], updated_daglist_data[i]);
+            
+            // Apply change if match: update_amount = diff * match
+            auto update_amount = circ.addGate(common::utils::GateType::kMul, data_diff, match);
+            
+            // Update daglist entry: daglist.data = daglist.data + update_amount
+            updated_daglist_data[i] = circ.addGate(common::utils::GateType::kAdd, updated_daglist_data[i], update_amount);
         }
     }
 
-    // Vertex_order to shuffleA
-    auto shuffleA = circ.addMGate(common::utils::GateType::kShuffle, input_wires, permutations);
-
-    // vertex_order to shuffleB
-    auto shuffleB = circ.addMGate(common::utils::GateType::kShuffle, input_wires, permutations);
-
-    // Two parallel sort subcircuits
-
-    // First sort subcircuit
-    auto sorted_indices_1 = circ.addSortSubcircuit(shuffleA, permutations, pid);
-    
-    // Second parallel sort subcircuit (using same input wires)
-    auto sorted_indices_2 = circ.addSortSubcircuit(shuffleB, permutations, pid);
-    
-    // Set outputs: sorted indices from both sort gates
-    for (size_t i = 0; i < sorted_indices_1.size(); ++i) {
-        circ.setAsOutput(sorted_indices_1[i]);
-    }
-    for (size_t i = 0; i < sorted_indices_2.size(); ++i) {
-        circ.setAsOutput(sorted_indices_2[i]);
+    // Set outputs: all daglist fields with updated data
+    for (size_t i = 0; i < vec_size; ++i) {
+        circ.setAsOutput(daglist_src[i]);
+        circ.setAsOutput(daglist_dst[i]);
+        circ.setAsOutput(daglist_isV[i]);
+        circ.setAsOutput(updated_daglist_data[i]);
+        circ.setAsOutput(daglist_sigs[i]);
+        circ.setAsOutput(daglist_sigv[i]);
+        circ.setAsOutput(daglist_sigd[i]);
     }
 
     return circ;
@@ -89,7 +117,7 @@ void benchmark(const bpo::variables_map& opts) {
 
     auto num_verts = opts["num-verts"].as<size_t>();
     auto num_edges = opts["num-edges"].as<size_t>();
-    auto num_inserts = opts["num-inserts"].as<size_t>();
+    auto num_changes = opts.count("num-changes") ? opts["num-changes"].as<size_t>() : static_cast<size_t>((num_verts + num_edges) * 0.05);
     auto nP = opts["num-parties"].as<int>();
     auto latency = opts["latency"].as<double>();
     auto pid = opts["pid"].as<size_t>();
@@ -99,15 +127,13 @@ void benchmark(const bpo::variables_map& opts) {
     auto port = opts["port"].as<int>();
     auto use_pking = opts["use-pking"].as<bool>();
 
-    // Calculate vec_size and input_size
-    size_t vec_size = num_verts + num_edges + num_inserts;
-    size_t input_size = static_cast<size_t>(std::ceil(std::log2(num_verts * 10)));
+    size_t vec_size = num_verts + num_edges;
 
     omp_set_nested(1);
     if (nP < 10) { omp_set_num_threads(nP); }
     else { omp_set_num_threads(10); }
 
-    std::cout << "Starting Graphiti init benchmarks" << std::endl;
+    std::cout << "Starting data change benchmarks" << std::endl;
 
     std::string net_config = opts.count("net-config") ? opts["net-config"].as<std::string>() : "";
     std::shared_ptr<io::NetIOMP> network = createNetwork(pid, nP, latency, port,
@@ -115,7 +141,7 @@ void benchmark(const bpo::variables_map& opts) {
                                                           net_config);
 
     // Increase socket buffer sizes to prevent deadlocks with large messages
-    size_t expected_output_bytes = vec_size * sizeof(Ring) * 2; // Two sort gates
+    size_t expected_output_bytes = vec_size * 7 * sizeof(Ring);
     int buffer_size = std::max(128 * 1024 * 1024, 
                                 static_cast<int>(expected_output_bytes * (nP - 1) * 3));
     increaseSocketBuffers(network.get(), buffer_size);
@@ -124,10 +150,10 @@ void benchmark(const bpo::variables_map& opts) {
     output_data["details"] = {{"num_parties", nP},
                               {"num_verts", num_verts},
                               {"num_edges", num_edges},
-                              {"num_inserts", num_inserts},
+                              {"num_changes", num_changes},
                               {"vec_size", vec_size},
-                              {"input_size", input_size},
-                              {"total_wires", vec_size * input_size},
+                              {"total_daglist_wires", vec_size * 7},
+                              {"total_change_wires", num_changes * 4},
                               {"latency (ms)", latency},
                               {"pid", pid},
                               {"threads", threads},
@@ -144,7 +170,7 @@ void benchmark(const bpo::variables_map& opts) {
     StatsPoint start(*network);
     network->sync();
 
-    auto circ = generateGraphitiInitCircuit(nP, pid, num_verts, num_edges).orderGatesByLevel();
+    auto circ = generateDataChangeCircuit(nP, pid, num_verts, num_edges, num_changes).orderGatesByLevel();
     network->sync();
 
     std::cout << "--- Circuit ---" << std::endl;
@@ -166,48 +192,11 @@ void benchmark(const bpo::variables_map& opts) {
     network->sync();
     StatsPoint preproc_end(*network);
 
-    std::cout << "Setting inputs" << std::endl;
+    std::cout << "Setting random inputs" << std::endl;
     OnlineEvaluator eval(nP, pid, network, std::move(preproc), circ, threads, seed, latency_us, use_pking);
     
-    // Set inputs: binary values (0 or 1)
-    std::unordered_map<common::utils::wire_t, Ring> inputs;
-    
-    // Collect all input wires owned by this party
-    std::vector<common::utils::wire_t> input_wires;
-    for (const auto& [wire, owner] : input_pid_map) {
-        if (owner == static_cast<int>(pid)) {
-            input_wires.push_back(wire);
-        }
-    }
-    
-    // Sort to ensure consistent ordering
-    std::sort(input_wires.begin(), input_wires.end());
-    
-    std::cout << "Setting inputs for party " << pid << std::endl;
-    
-    // Generate random binary input values
-    // Element j, component i: stored at wire[i + j * input_size]
-    std::vector<std::vector<Ring>> input_values(vec_size, std::vector<Ring>(input_size));
-    
-    srand(seed);
-    for (size_t elem = 0; elem < vec_size; ++elem) {
-        for (size_t comp = 0; comp < input_size; ++comp) {
-            // Binary values: 0 or 1
-            input_values[elem][comp] = static_cast<Ring>(rand() % 2);
-        }
-    }
-    
-    // Set wire inputs: wire ordering is [comp0_elem0, comp1_elem0, ..., comp0_elem1, ...]
-    size_t wire_idx = 0;
-    for (size_t elem = 0; elem < vec_size && wire_idx < input_wires.size(); ++elem) {
-        for (size_t comp = 0; comp < input_size && wire_idx < input_wires.size(); ++comp) {
-            inputs[input_wires[wire_idx++]] = input_values[elem][comp];
-        }
-    }
-    
-    std::cout << "Total inputs set: " << inputs.size() << " wires" << std::endl;
-    
-    eval.setInputs(inputs);
+    // Use random inputs for evaluation
+    eval.setRandomInputs();
     network->sync();
     
     std::cout << "Starting online evaluation" << std::endl;
@@ -226,72 +215,25 @@ void benchmark(const bpo::variables_map& opts) {
     network->sync();
     std::cout << "Number of outputs: " << outputs.size() << std::endl;
     
-    // Outputs: two sets of sorted indices (from two parallel sort gates)
-    std::vector<Ring> sorted_indices_1(vec_size);
-    std::vector<Ring> sorted_indices_2(vec_size);
-    
-    if (outputs.size() >= 2 * vec_size) {
-        for (size_t i = 0; i < vec_size; ++i) {
-            sorted_indices_1[i] = outputs[i];
-            sorted_indices_2[i] = outputs[vec_size + i];
-        }
-    }
-    
-    // Print sorted output indices
-    std::cout << "\n=== INPUT VALUES (Party " << pid << ") ===" << std::endl;
-    std::cout << "Element | Components (binary) | Sort1 | Sort2" << std::endl;
-    std::cout << "--------|---------------------|-------|-------" << std::endl;
+    // Print sample outputs (first 10 entries)
+    std::cout << "\n=== OUTPUT: Updated Daglist (first 10 entries) ===" << std::endl;
+    std::cout << "Entry | Src | Dst | isV | Data | sigs | sigv | sigd" << std::endl;
+    std::cout << "------|-----|-----|-----|------|------|------|------" << std::endl;
 
-    for (size_t elem = 0; elem < std::min(static_cast<size_t>(10), vec_size); ++elem) {
-        std::cout << std::setw(7) << elem << " | ";
-        for (size_t comp = 0; comp < input_size; ++comp) {
-            std::cout << input_values[elem][comp];
-            if (comp < input_size - 1) std::cout << " ";
+    size_t num_outputs = std::min(static_cast<size_t>(10), vec_size);
+    for (size_t i = 0; i < num_outputs; ++i) {
+        size_t idx = i * 7;
+        if (idx + 6 < outputs.size()) {
+            std::cout << std::setw(5) << i << " | "
+                      << std::setw(3) << outputs[idx + 0] << " | "
+                      << std::setw(3) << outputs[idx + 1] << " | "
+                      << std::setw(3) << outputs[idx + 2] << " | "
+                      << std::setw(4) << outputs[idx + 3] << " | "
+                      << std::setw(4) << outputs[idx + 4] << " | "
+                      << std::setw(4) << outputs[idx + 5] << " | "
+                      << std::setw(4) << outputs[idx + 6] << std::endl;
         }
-        std::cout << " | " << std::setw(5) << sorted_indices_1[elem];
-        std::cout << " | " << std::setw(5) << sorted_indices_2[elem] << std::endl;
     }
-    
-    // Verify sorting for both sort gates
-    auto verify_sorting = [&](const std::vector<Ring>& sorted_indices) -> bool {
-        bool is_sorted = true;
-        for (size_t i = 1; i < vec_size; ++i) {
-            size_t idx_prev = static_cast<size_t>(sorted_indices[i-1]) - 1;
-            size_t idx_curr = static_cast<size_t>(sorted_indices[i]) - 1;
-            
-            if (idx_prev >= vec_size || idx_curr >= vec_size) {
-                is_sorted = false;
-                break;
-            }
-            
-            // Compare lexicographically (most significant bit first)
-            bool prev_less = false;
-            bool equal = true;
-            for (size_t comp = 0; comp < input_size; ++comp) {
-                if (input_values[idx_prev][comp] < input_values[idx_curr][comp]) {
-                    prev_less = true;
-                    equal = false;
-                    break;
-                } else if (input_values[idx_prev][comp] > input_values[idx_curr][comp]) {
-                    prev_less = false;
-                    equal = false;
-                    break;
-                }
-            }
-            
-            if (!prev_less && !equal) {
-                is_sorted = false;
-                break;
-            }
-        }
-        return is_sorted;
-    };
-    
-    bool sort1_verified = verify_sorting(sorted_indices_1);
-    bool sort2_verified = verify_sorting(sorted_indices_2);
-    
-    std::cout << "\nSort Gate 1 verification: " << (sort1_verified ? "PASSED ✓" : "FAILED ✗") << std::endl;
-    std::cout << "Sort Gate 2 verification: " << (sort2_verified ? "PASSED ✓" : "FAILED ✗") << std::endl;
     std::cout << std::endl;
     
     StatsPoint end(*network);
@@ -325,9 +267,7 @@ void benchmark(const bpo::variables_map& opts) {
     std::cout << std::endl;
 
     output_data["stats"] = {{"peak_virtual_memory", peakVirtualMemory()},
-                            {"peak_resident_set_size", peakResidentSetSize()},
-                            {"sort1_verified", sort1_verified},
-                            {"sort2_verified", sort2_verified}};
+                            {"peak_resident_set_size", peakResidentSetSize()}};
 
     std::cout << "--- Statistics ---" << std::endl;
     for (const auto& [key, value] : output_data["stats"].items()) {
@@ -346,7 +286,7 @@ bpo::options_description programOptions() {
         ("num-parties,n", bpo::value<int>()->required(), "Number of parties.")
         ("num-verts", bpo::value<size_t>()->required(), "Number of vertices.")
         ("num-edges", bpo::value<size_t>()->required(), "Number of edges.")
-        ("num-inserts", bpo::value<size_t>(), "Number of vertex insertions (default: num-verts * 0.2).")
+        ("num-changes", bpo::value<size_t>(), "Number of data changes to apply (default: (num-verts + num-edges) * 0.05).")
         ("latency,l", bpo::value<double>()->default_value(0.5), "Network latency in ms.")
         ("pid,p", bpo::value<size_t>()->required(), "Party ID.")
         ("threads,t", bpo::value<size_t>()->default_value(6), "Number of threads (recommended 6).")
@@ -362,7 +302,7 @@ bpo::options_description programOptions() {
 
 int main(int argc, char* argv[]) {
     auto prog_opts(programOptions());
-    bpo::options_description cmdline("Benchmark Graphiti initialization circuit with two parallel sort gates.");
+    bpo::options_description cmdline("Benchmark data change circuit with equality checks.");
     cmdline.add(prog_opts);
     cmdline.add_options()(
       "config,c", bpo::value<std::string>(),
@@ -388,12 +328,6 @@ int main(int argc, char* argv[]) {
         if (!opts["localhost"].as<bool>() && (opts.count("net-config") == 0)) {
             throw std::runtime_error("Expected one of 'localhost' or 'net-config'");
         }
-        // Set default value for num-inserts if not provided
-        if (opts.count("num-inserts") == 0) {
-            size_t num_verts = opts["num-verts"].as<size_t>();
-            size_t default_inserts = static_cast<size_t>(num_verts * 0.2);
-            opts.insert(std::make_pair("num-inserts", bpo::variable_value(default_inserts, false)));
-        }
     } catch (const std::exception& ex) {
         std::cerr << ex.what() << std::endl;
         return 1;
@@ -406,4 +340,4 @@ int main(int argc, char* argv[]) {
     }
     return 0;
 }
-// usage: ./../run.sh naive_add_vertices --num-parties 2 --num-verts 100 --num-edges 200
+// usage: ./../run.sh naive_data_change --num-parties 2 --num-verts 100 --num-edges 200 --num-changes 10
