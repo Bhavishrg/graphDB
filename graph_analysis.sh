@@ -48,16 +48,16 @@ run_benchmark() {
 # echo "Starting graph analysis benchmarks"
 
 # run_benchmark graphiti_init --sizes "${SIZES_GRAPHITI[@]}"
-# run_benchmark grapharo_init
+run_benchmark grapharo_init
 
 # Run grapharo_init with varying client counts
-# echo "Running grapharo_init with varying client counts..."
-# for clients in 2 5 15; do
-#     echo "Running grapharo_init with --num-clients $clients --num-vert 100000 --num-edge 1000000"
-#     $RUN_SH grapharo_init --num-vert 100000 --num-edge 1000000 --num-clients "$clients" --latency 0 --random-inputs 1
-#     echo "Finished grapharo_init with $clients clients"
-#     echo "----------------------------------------"
-# done
+echo "Running grapharo_init with varying client counts..."
+for clients in 2 5 15; do
+    echo "Running grapharo_init with --num-clients $clients --num-vert 100000 --num-edge 1000000"
+    $RUN_SH grapharo_init --num-vert 100000 --num-edge 1000000 --num-clients "$clients" --latency 0 --random-inputs 1
+    echo "Finished grapharo_init with $clients clients"
+    echo "----------------------------------------"
+done
 
 run_benchmark insertV
 run_benchmark insertE
@@ -65,9 +65,5 @@ run_benchmark delete
 run_benchmark modify
 run_benchmark bfs
 
-# Naive benchmarks
-run_benchmark naiveInsert --sizes "${SIZES_GRAPHITI[@]}"
-run_benchmark naiveDelete --sizes "${SIZES_GRAPHITI[@]}"
-run_benchmark naiveModify --sizes "${SIZES_GRAPHITI[@]}"
 
 echo "All benchmarks queued/completed. Check Results/ for logs."

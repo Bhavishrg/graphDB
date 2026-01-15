@@ -17,16 +17,16 @@ All required dependencies to compile and run the project are available through t
 To build and run the docker image, execute the following commands from the root directory of the repository:
 
 ```sh
-# Build the GraphDB Docker image.
+# Build the grapharo Docker image.
 #
 # Building the Docker image requires at least 4GB RAM. This needs to be set 
 # explicitly in case of Windows and MacOS.
-docker build -t graphdb .
+docker build -t grapharo .
 
 # Create and run a container.
 #
 # This should start the shell from within the container.
-docker run -it -v $PWD:/code graphdb
+docker run -it -v $PWD:/code grapharo
 
 # The following command changes the working directory to the one containing the 
 # source code and should be run on the shell started using the previous command.
@@ -43,149 +43,67 @@ cmake -DCMAKE_BUILD_TYPE=Release ..
 
 # The two main targets are 'benchmarks' and 'tests' corresponding to
 # binaries used to run benchmarks and unit tests respectively.
-make benchmarks
+make 
 ```
 
-## Network Configuration and Socket Buffers
-
-### Socket Buffer Sizes
-The benchmarks automatically configure socket buffer sizes to prevent deadlocks with large data transfers. The default is 128 MB per socket buffer, which is sufficient for most use cases.
-
-**Memory Usage Estimates:**
-- 2 parties: ~512 MB per process in socket buffers
-- 5 parties: ~2 GB per process in socket buffers
-- 10 parties: ~4.5 GB per process in socket buffers
-
-For systems with limited memory (< 32 GB), you may want to reduce buffer sizes. For systems with abundant memory (> 64 GB), larger buffers can improve performance.
-
-### System-Level Buffer Limits
-If you encounter socket buffer limitation warnings, you may need to increase system limits:
-
-**Check current limits:**
-```sh
-cat /proc/sys/net/core/rmem_max  # Receive buffer max
-cat /proc/sys/net/core/wmem_max  # Send buffer max
-```
-
-**Increase limits (requires root on host machine):**
-```sh
-# Temporary (until reboot)
-sudo sysctl -w net.core.rmem_max=134217728  # 128 MB
-sudo sysctl -w net.core.wmem_max=134217728  # 128 MB
-
-# Permanent
-echo "net.core.rmem_max = 134217728" | sudo tee -a /etc/sysctl.conf
-echo "net.core.wmem_max = 134217728" | sudo tee -a /etc/sysctl.conf
-sudo sysctl -p
-```
-
-**For Docker containers:**
-```sh
-# Run Docker with increased buffer limits
-docker run -it \
-  --sysctl net.core.rmem_max=134217728 \
-  --sysctl net.core.wmem_max=134217728 \
-  -v $PWD:/code graphdb
-```
-
-## Usage
-A short description of the compiled programs is given below.
-All of them provide detailed usage description on using the `--help` option.
-
-### Available Benchmark Executables
-
-**Circuit Operation Benchmarks:**
-- `benchmarks/add`: Benchmark addition and multiplication gates
-- `benchmarks/mult`: Benchmark multiplication gate performance
-- `benchmarks/equality`: Benchmark equality testing operations
-- `benchmarks/reconstruction`: Benchmark secret reconstruction operations
-
-**Graph Protocol Benchmarks:**
-- `benchmarks/shuffle`: Benchmark shuffle gate operations
-- `benchmarks/compaction`: Benchmark compaction operations (single-threaded)
-- `benchmarks/compaction_parallel`: Benchmark compaction operations (parallel)
-- `benchmarks/groupindex`: Benchmark group-wise indexing (single-threaded)
-- `benchmarks/groupindex_parallel`: Benchmark group-wise indexing (parallel)
-- `benchmarks/grouppropagate`: Benchmark group-wise propagation (single-threaded)
-- `benchmarks/grouppropagate_parallel`: Benchmark group-wise propagation (parallel)
-
-**Network Benchmarks:**
-- `benchmarks/vector_reconstruction`: Benchmark vector creation and reconstruction using direct network send/recv
 
 ### Running Benchmarks
 
-Execute the following commands from the `build` directory created during compilation to run the programs:
+## Scripts
+
+Two helper scripts are provided to run benchmarks and collect logs: [run.sh](run.sh) and [graph_analysis.sh](graph_analysis.sh).
+
+### run.sh
+
+Usage: `./../run.sh <benchmark_name> [benchmark_options...]`
+
+**Available benchmarks:**
+
+- `bfs` - Breadth-First Search benchmark
+- `grapharo_init` - Grapharo initialization benchmark
+- `graphiti_init` - Graphiti initialization benchmark
+- `insertE` - Edge insertion benchmark
+- `insertV` - Vertex insertion benchmark
+- `modify` - Graph modification benchmark
+- `delete` - Graph deletion benchmark
+
+**Example usage:**
 
 ```sh
-# Example: Run compaction benchmark with 2 parties on localhost
-# Run this command in separate terminals for each party (pid 1 and 2)
+# From build directory, run BFS benchmark with 1000 vertices
+./../run.sh bfs --num-verts 1000 -n 2
 
-# Party 1
-./benchmarks/compaction -p 1 -n 2 --localhost -l 0.5 -v 100000 --num-payloads 1
+# Run insertE benchmark with custom parameters
+./../run.sh insertE --num-verts 10000 --num-edges 50000 -n 3
 
-# Party 2 (in another terminal)
-./benchmarks/compaction -p 2 -n 2 --localhost -l 0.5 -v 100000 --num-payloads 1
+# Run grapharo_init benchmark
+./../run.sh grapharo_init --num-verts 100000 -n 2
 ```
 
-**Common Options:**
-- `-p, --pid`: Party ID (required, starts from 1)
-- `-n, --num-parties`: Number of parties (required)
-- `-v, --vec-size`: Size of input vectors
-- `-l, --latency`: Network latency in milliseconds
-- `-t, --threads`: Number of threads (default: 6)
-- `--localhost`: Run all parties on localhost
-- `--net-config`: Path to JSON file with network configuration (alternative to --localhost)
-- `-o, --output`: File to save benchmark results
-- `--help`: Show detailed help message
+### graph_analysis.sh
 
-**Network Configuration File Format (net_config.json):**
-```json
-[
-  "192.168.1.1",
-  "192.168.1.2",
-  "192.168.1.3"
-]
-```
-The array should contain IP addresses for party 0 (king party), party 1, party 2, etc.
+Simple wrapper to run all benchmarks reported in the paper and save logs.
 
-### Example Benchmark Runs
+**Usage:**
 
 ```sh
-# Vector reconstruction with 1 million elements
-./benchmarks/vector_reconstruction -p 1 -n 2 --localhost -l 0.5 -v 1000000
-
-# Parallel compaction with 100k elements and 5 payload vectors
-./benchmarks/compaction_parallel -p 1 -n 2 --localhost -l 0.5 -v 100000 --num-payloads 5
-
-# Group-wise propagation with output saved to file
-./benchmarks/grouppropagate_parallel -p 1 -n 2 --localhost -l 0.5 -v 50000 -o results.json
-```
-
-### Legacy Benchmarks
-
-- `benchmarks/e2e_emgraph`: Benchmark the performance of the end to end emgraph protocol with initialization, preprocessing and online phases.
-- `benchmarks/initialization_emgraph`: Benchmark the performance of the initialization phase of the emgraph protocol.
-- `benchmarks/initialization_graphiti`: Benchmark the performance of the initialization phase of the graphiti protocol.
-- `benchmarks/mpa_emgraph`: Benchmark the performance of the preprocessing and online phases of 1 round of message passing for emgraph.
-- `benchmarks/mpa_graphiti`: Benchmark the performance of the preprocessing and online phases of 1 round of message passing for graphiti.
-
-Execute the following commands from the `build` directory created during compilation to run the programs:
-```sh
-# Benchmark EmGraph MPA.
-#
-# The command below should be run on n+1 different terminals with $PID set to
-# 0, 1, 2, upto n i.e., one instance corresponding to each party.
-#
-# The -v option can be used to vary the graph size. The -i option can be used to
-# vary the number of iterations for message passing. The -l option will later on
-# allow to vary the network latency.
-#
-# The program can be run on different machines by replacing the `--localhost`
-# option with '--net-config <net_config.json>' where 'net_config.json' is a
-# JSON file containing the IPs of the parties. A template is given in the
-# repository root.
-./benchmarks/e2e_emgraph -p $party --localhost -l 100.0 -v $vec_size -i 10 -n $players
-
-# Run the graph_analysis script to automatically run the benchmarks
+# From build directory:
 ./../graph_analysis.sh
 ```
+
+## Results / Logs Layout
+
+Both scripts store logs under the `Results/` directory with the following layout:
+
+```
+Results/<benchmark_name>/<num_verts>/<num_edges>/<num_clients>/
+    party_0.log   # trusted party
+    party_1.log
+    party_2.log
+    ...
+    aggregate_stat.log
+```
+
+The `aggregate_stat.log` file reports the aggregated runtime and communication statistics.
+
+The included Python scripts under `pythonScripts/getAggStat.py` can be used to aggregate and convert these logs into human-friendly tables.
